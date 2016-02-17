@@ -4,12 +4,12 @@
 
 LOCAL_PATH := $(call my-dir)
 
-## libboringcrypto
+## libcrypto-m
 
 # Target static library
 include $(CLEAR_VARS)
 LOCAL_MODULE_TAGS := optional
-LOCAL_MODULE := libboringcrypto_static
+LOCAL_MODULE := libcrypto-m_static
 
 LOCAL_EXPORT_C_INCLUDE_DIRS += $(LOCAL_PATH)/src/include
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk $(LOCAL_PATH)/crypto-sources.mk
@@ -28,7 +28,7 @@ include $(BUILD_STATIC_LIBRARY)
 # Target shared library
 include $(CLEAR_VARS)
 LOCAL_MODULE_TAGS := optional
-LOCAL_MODULE := libboringcrypto
+LOCAL_MODULE := libcrypto-m
 LOCAL_EXPORT_C_INCLUDE_DIRS += $(LOCAL_PATH)/src/include
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk $(LOCAL_PATH)/crypto-sources.mk
 LOCAL_CFLAGS += -fvisibility=hidden -DBORINGSSL_SHARED_LIBRARY -DBORINGSSL_IMPLEMENTATION -Wno-unused-parameter
@@ -51,7 +51,7 @@ include $(BUILD_SHARED_LIBRARY)
 #LOCAL_MODULE_TAGS := optional
 #LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk $(LOCAL_PATH)/sources.mk
 #LOCAL_CFLAGS = -Wno-unused-parameter
-#LOCAL_SHARED_LIBRARIES=libboringcrypto libboringssl
+#LOCAL_SHARED_LIBRARIES=libcrypto-m libboringssl
 #LOCAL_SHARED_LIBRARIES += libstlport
 #include $(LOCAL_PATH)/sources.mk
 #LOCAL_SRC_FILES = $(tool_sources)
@@ -78,7 +78,7 @@ LOCAL_MODULE := libboringssl
 LOCAL_EXPORT_C_INCLUDE_DIRS += $(LOCAL_PATH)/src/include
 LOCAL_ADDITIONAL_DEPENDENCIES := $(LOCAL_PATH)/Android.mk $(LOCAL_PATH)/ssl-sources.mk
 LOCAL_CFLAGS += -fvisibility=hidden -DBORINGSSL_SHARED_LIBRARY -DBORINGSSL_IMPLEMENTATION -Wno-unused-parameter
-LOCAL_SHARED_LIBRARIES=libboringcrypto
+LOCAL_SHARED_LIBRARIES=libcrypto-m
 LOCAL_SDK_VERSION := 9
 include $(LOCAL_PATH)/ssl-sources.mk
 include $(BUILD_SHARED_LIBRARY)
