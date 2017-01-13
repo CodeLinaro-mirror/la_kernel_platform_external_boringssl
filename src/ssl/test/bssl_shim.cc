@@ -65,7 +65,8 @@ OPENSSL_MSVC_PRAGMA(comment(lib, "Ws2_32.lib"))
 #include "packeted_bio.h"
 #include "test_config.h"
 
-namespace bssl {
+
+static CRYPTO_BUFFER_POOL *g_pool = nullptr;
 
 #if !defined(OPENSSL_WINDOWS)
 static int closesocket(int sock) {
@@ -246,7 +247,7 @@ static ssl_private_key_result_t AsyncPrivateKeySign(
       return ssl_private_key_failure;
   }
 
-  ScopedEVP_MD_CTX ctx;
+  bssl::ScopedEVP_MD_CTX ctx;
   EVP_PKEY_CTX *pctx;
   if (!EVP_DigestSignInit(ctx.get(), &pctx, md, nullptr,
                           test_state->private_key.get())) {
@@ -399,9 +400,8 @@ static bool GetCertificate(SSL *ssl, bssl::UniquePtr<X509> *out_x509,
     return false;
   }
   if (!config->ocsp_response.empty() &&
-      !SSL_CTX_set_ocsp_response(SSL_get_SSL_CTX(ssl),
-                                 (const uint8_t *)config->ocsp_response.data(),
-                                 config->ocsp_response.size())) {
+      !SSL_set_ocsp_response(ssl, (const uint8_t *)config->ocsp_response.data(),
+                             config->ocsp_response.size())) {
     return false;
   }
   return true;
@@ -438,9 +438,9 @@ static bool InstallCertificate(SSL *ssl) {
   return true;
 }
 
-static int SelectCertificateCallback(const struct ssl_early_callback_ctx *ctx) {
-  const TestConfig *config = GetTestConfig(ctx->ssl);
-  GetTestState(ctx->ssl)->early_callback_called = true;
+static int SelectCertificateCallback(const SSL_CLIENT_HELLO *client_hello) {
+  const TestConfig *config = GetTestConfig(client_hello->ssl);
+  GetTestState(client_hello->ssl)->early_callback_called = true;
 
   if (!config->expected_server_name.empty()) {
     const uint8_t *extension_data;
@@ -448,9 +448,9 @@ static int SelectCertificateCallback(const struct ssl_early_callback_ctx *ctx) {
     CBS extension, server_name_list, host_name;
     uint8_t name_type;
 
-    if (!SSL_early_callback_ctx_extension_get(ctx, TLSEXT_TYPE_server_name,
-                                              &extension_data,
-                                              &extension_len)) {
+    if (!SSL_early_callback_ctx_extension_get(
+            client_hello, TLSEXT_TYPE_server_name, &extension_data,
+            &extension_len)) {
       fprintf(stderr, "Could not find server_name extension.\n");
       return -1;
     }
@@ -483,14 +483,38 @@ static int SelectCertificateCallback(const struct ssl_early_callback_ctx *ctx) {
       // Install the certificate asynchronously.
       return 0;
     }
-    if (!InstallCertificate(ctx->ssl)) {
+    if (!InstallCertificate(client_hello->ssl)) {
       return -1;
     }
   }
   return 1;
 }
 
+static bool CheckCertificateRequest(SSL *ssl) {
+  const TestConfig *config = GetTestConfig(ssl);
+
+  if (!config->expected_certificate_types.empty()) {
+    const uint8_t *certificate_types;
+    size_t certificate_types_len =
+        SSL_get0_certificate_types(ssl, &certificate_types);
+    if (certificate_types_len != config->expected_certificate_types.size() ||
+        memcmp(certificate_types,
+               config->expected_certificate_types.data(),
+               certificate_types_len) != 0) {
+      fprintf(stderr, "certificate types mismatch\n");
+      return false;
+    }
+  }
+
+  // TODO(davidben): Test |SSL_get_client_CA_list|.
+  return true;
+}
+
 static int ClientCertCallback(SSL *ssl, X509 **out_x509, EVP_PKEY **out_pkey) {
+  if (!CheckCertificateRequest(ssl)) {
+    return -1;
+  }
+
   if (GetTestConfig(ssl)->async && !GetTestState(ssl)->cert_ready) {
     return -1;
   }
@@ -510,6 +534,32 @@ static int ClientCertCallback(SSL *ssl, X509 **out_x509, EVP_PKEY **out_pkey) {
   // Chains and asynchronous private keys are not supported with client_cert_cb.
   *out_x509 = x509.release();
   *out_pkey = pkey.release();
+  return 1;
+}
+
+static int CertCallback(SSL *ssl, void *arg) {
+  const TestConfig *config = GetTestConfig(ssl);
+
+  // Check the CertificateRequest metadata is as expected.
+  if (!SSL_is_server(ssl) && !CheckCertificateRequest(ssl)) {
+    return -1;
+  }
+
+  if (config->fail_cert_callback) {
+    return 0;
+  }
+
+  // The certificate will be installed via other means.
+  if (!config->async || config->use_early_callback) {
+    return 1;
+  }
+
+  if (!GetTestState(ssl)->cert_ready) {
+    return -1;
+  }
+  if (!InstallCertificate(ssl)) {
+    return 0;
+  }
   return 1;
 }
 
@@ -645,45 +695,6 @@ static void ChannelIdCallback(SSL *ssl, EVP_PKEY **out_pkey) {
   *out_pkey = GetTestState(ssl)->channel_id.release();
 }
 
-static int CertCallback(SSL *ssl, void *arg) {
-  const TestConfig *config = GetTestConfig(ssl);
-
-  // Check the CertificateRequest metadata is as expected.
-  //
-  // TODO(davidben): Test |SSL_get_client_CA_list|.
-  if (!SSL_is_server(ssl) &&
-      !config->expected_certificate_types.empty()) {
-    const uint8_t *certificate_types;
-    size_t certificate_types_len =
-        SSL_get0_certificate_types(ssl, &certificate_types);
-    if (certificate_types_len != config->expected_certificate_types.size() ||
-        memcmp(certificate_types,
-               config->expected_certificate_types.data(),
-               certificate_types_len) != 0) {
-      fprintf(stderr, "certificate types mismatch\n");
-      return 0;
-    }
-  }
-
-  if (config->fail_cert_callback) {
-    return 0;
-  }
-
-  // The certificate will be installed via other means.
-  if (!config->async || config->use_early_callback ||
-      config->use_old_client_cert_callback) {
-    return 1;
-  }
-
-  if (!GetTestState(ssl)->cert_ready) {
-    return -1;
-  }
-  if (!InstallCertificate(ssl)) {
-    return 0;
-  }
-  return 1;
-}
-
 static SSL_SESSION *GetSessionCallback(SSL *ssl, uint8_t *data, int len,
                                        int *copy) {
   TestState *async_state = GetTestState(ssl);
@@ -697,8 +708,8 @@ static SSL_SESSION *GetSessionCallback(SSL *ssl, uint8_t *data, int len,
   }
 }
 
-static int DDoSCallback(const struct ssl_early_callback_ctx *early_context) {
-  const TestConfig *config = GetTestConfig(early_context->ssl);
+static int DDoSCallback(const SSL_CLIENT_HELLO *client_hello) {
+  const TestConfig *config = GetTestConfig(client_hello->ssl);
   static int callback_num = 0;
 
   callback_num++;
@@ -900,6 +911,8 @@ static bssl::UniquePtr<SSL_CTX> SetupCtx(const TestConfig *config) {
     return nullptr;
   }
 
+  SSL_CTX_set0_buffer_pool(ssl_ctx.get(), g_pool);
+
   // Enable TLS 1.3 for tests.
   if (!config->is_dtls &&
       !SSL_CTX_set_max_proto_version(ssl_ctx.get(), TLS1_3_VERSION)) {
@@ -981,7 +994,7 @@ static bssl::UniquePtr<SSL_CTX> SetupCtx(const TestConfig *config) {
     SSL_CTX_set_alpn_select_cb(ssl_ctx.get(), AlpnSelectCallback, NULL);
   }
 
-  SSL_CTX_enable_tls_channel_id(ssl_ctx.get());
+  SSL_CTX_set_tls_channel_id_enabled(ssl_ctx.get(), 1);
   SSL_CTX_set_channel_id_cb(ssl_ctx.get(), ChannelIdCallback);
 
   SSL_CTX_set_current_time_cb(ssl_ctx.get(), CurrentTimeCallback);
@@ -1346,21 +1359,15 @@ static bool CheckHandshakeProperties(SSL *ssl, bool is_resume) {
     return false;
   }
 
-  if (config->expect_curve_id != 0) {
-    uint16_t curve_id = SSL_get_curve_id(ssl);
-    if (static_cast<uint16_t>(config->expect_curve_id) != curve_id) {
-      fprintf(stderr, "curve_id was %04x, wanted %04x\n", curve_id,
-              static_cast<uint16_t>(config->expect_curve_id));
-      return false;
-    }
+  int expect_curve_id = config->expect_curve_id;
+  if (is_resume && config->expect_resume_curve_id != 0) {
+    expect_curve_id = config->expect_resume_curve_id;
   }
-
-  if (config->expect_dhe_group_size != 0) {
-    unsigned dhe_group_size = SSL_get_dhe_group_size(ssl);
-    if (static_cast<unsigned>(config->expect_dhe_group_size) !=
-        dhe_group_size) {
-      fprintf(stderr, "dhe_group_size was %u, wanted %d\n", dhe_group_size,
-              config->expect_dhe_group_size);
+  if (expect_curve_id != 0) {
+    uint16_t curve_id = SSL_get_curve_id(ssl);
+    if (static_cast<uint16_t>(expect_curve_id) != curve_id) {
+      fprintf(stderr, "curve_id was %04x, wanted %04x\n", curve_id,
+              static_cast<uint16_t>(expect_curve_id));
       return false;
     }
   }
@@ -1486,7 +1493,9 @@ static bool DoExchange(bssl::UniquePtr<SSL_SESSION> *out_session,
       !InstallCertificate(ssl.get())) {
     return false;
   }
-  SSL_set_cert_cb(ssl.get(), CertCallback, nullptr);
+  if (!config->use_old_client_cert_callback) {
+    SSL_set_cert_cb(ssl.get(), CertCallback, nullptr);
+  }
   if (config->require_any_client_certificate) {
     SSL_set_verify(ssl.get(), SSL_VERIFY_PEER|SSL_VERIFY_FAIL_IF_NO_PEER_CERT,
                    NULL);
@@ -1520,10 +1529,10 @@ static bool DoExchange(bssl::UniquePtr<SSL_SESSION> *out_session,
   }
   if (!config->expected_channel_id.empty() ||
       config->enable_channel_id) {
-    SSL_enable_tls_channel_id(ssl.get());
+    SSL_set_tls_channel_id_enabled(ssl.get(), 1);
   }
   if (!config->send_channel_id.empty()) {
-    SSL_enable_tls_channel_id(ssl.get());
+    SSL_set_tls_channel_id_enabled(ssl.get(), 1);
     if (!config->async) {
       // The async case will be supplied by |ChannelIdCallback|.
       bssl::UniquePtr<EVP_PKEY> pkey = LoadPrivateKey(config->send_channel_id);
@@ -1588,9 +1597,6 @@ static bool DoExchange(bssl::UniquePtr<SSL_SESSION> *out_session,
   }
   if (!config->check_close_notify) {
     SSL_set_quiet_shutdown(ssl.get(), 1);
-  }
-  if (config->disable_npn) {
-    SSL_set_options(ssl.get(), SSL_OP_DISABLE_NPN);
   }
   if (config->p384_only) {
     int nid = NID_secp384r1;
@@ -1873,7 +1879,7 @@ class StderrDelimiter {
   ~StderrDelimiter() { fprintf(stderr, "--- DONE ---\n"); }
 };
 
-static int Main(int argc, char **argv) {
+int main(int argc, char **argv) {
   // To distinguish ASan's output from ours, add a trailing message to stderr.
   // Anything following this line will be considered an error.
   StderrDelimiter delimiter;
@@ -1906,6 +1912,8 @@ static int Main(int argc, char **argv) {
   if (!ParseConfig(argc - 1, argv + 1, &config)) {
     return Usage(argv[0]);
   }
+
+  g_pool = CRYPTO_BUFFER_POOL_new();
 
   // Some code treats the zero time special, so initialize the clock to a
   // non-zero time.
@@ -1940,10 +1948,4 @@ static int Main(int argc, char **argv) {
   }
 
   return 0;
-}
-
-}  // namespace bssl
-
-int main(int argc, char **argv) {
-  return bssl::Main(argc, argv);
 }

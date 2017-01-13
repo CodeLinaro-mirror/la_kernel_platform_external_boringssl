@@ -130,15 +130,16 @@
 #include "internal.h"
 
 
-SSL_HANDSHAKE *ssl_handshake_new(enum ssl_hs_wait_t (*do_handshake)(SSL *ssl)) {
+SSL_HANDSHAKE *ssl_handshake_new(SSL *ssl) {
   SSL_HANDSHAKE *hs = OPENSSL_malloc(sizeof(SSL_HANDSHAKE));
   if (hs == NULL) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_MALLOC_FAILURE);
     return NULL;
   }
   memset(hs, 0, sizeof(SSL_HANDSHAKE));
-  hs->do_handshake = do_handshake;
+  hs->ssl = ssl;
   hs->wait = ssl_hs_ok;
+  hs->state = SSL_ST_INIT;
   return hs;
 }
 
@@ -170,6 +171,7 @@ void ssl_handshake_free(SSL_HANDSHAKE *hs) {
   }
 
   OPENSSL_free(hs->hostname);
+  EVP_PKEY_free(hs->peer_pubkey);
   OPENSSL_free(hs);
 }
 
@@ -260,8 +262,9 @@ int ssl3_write_message(SSL *ssl) {
   return 1;
 }
 
-int ssl3_send_finished(SSL *ssl, int a, int b) {
-  if (ssl->state == b) {
+int ssl3_send_finished(SSL_HANDSHAKE *hs, int a, int b) {
+  SSL *const ssl = hs->ssl;
+  if (hs->state == b) {
     return ssl->method->write_message(ssl);
   }
 
@@ -305,11 +308,12 @@ int ssl3_send_finished(SSL *ssl, int a, int b) {
     return -1;
   }
 
-  ssl->state = b;
+  hs->state = b;
   return ssl->method->write_message(ssl);
 }
 
-int ssl3_get_finished(SSL *ssl) {
+int ssl3_get_finished(SSL_HANDSHAKE *hs) {
+  SSL *const ssl = hs->ssl;
   int ret = ssl->method->ssl_get_message(ssl, SSL3_MT_FINISHED,
                                          ssl_dont_hash_message);
   if (ret <= 0) {

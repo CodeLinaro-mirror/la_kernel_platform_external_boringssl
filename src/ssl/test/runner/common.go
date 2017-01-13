@@ -1025,14 +1025,6 @@ type ProtocolBugs struct {
 	// reject extensions on intermediate certificates.
 	ExpectNoExtensionsOnIntermediate bool
 
-	// CECPQ1BadX25519Part corrupts the X25519 part of a CECPQ1 key exchange, as
-	// a trivial proof that it is actually used.
-	CECPQ1BadX25519Part bool
-
-	// CECPQ1BadNewhopePart corrupts the Newhope part of a CECPQ1 key exchange,
-	// as a trivial proof that it is actually used.
-	CECPQ1BadNewhopePart bool
-
 	// RecordPadding is the number of bytes of padding to add to each
 	// encrypted record in TLS 1.3.
 	RecordPadding int
@@ -1108,6 +1100,25 @@ type ProtocolBugs struct {
 	// DuplicateKeyShares, if true, causes the TLS 1.3 client to send two
 	// copies of each KeyShareEntry.
 	DuplicateKeyShares bool
+
+	// SendEarlyAlert, if true, sends a fatal alert after the ClientHello.
+	SendEarlyAlert bool
+
+	// SendEarlyDataLength, if non-zero, is the amount of early data to send after
+	// the ClientHello.
+	SendEarlyDataLength int
+
+	// OmitEarlyDataExtension, if true, causes the early data extension to
+	// be omitted in the ClientHello.
+	OmitEarlyDataExtension bool
+
+	// SendEarlyDataOnSecondClientHello, if true, causes the TLS 1.3 client to
+	// send early data after the second ClientHello.
+	SendEarlyDataOnSecondClientHello bool
+
+	// InterleaveEarlyData, if true, causes the TLS 1.3 client to send early
+	// data interleaved with the second ClientHello and the client Finished.
+	InterleaveEarlyData bool
 
 	// EmptyEncryptedExtensions, if true, causes the TLS 1.3 server to
 	// emit an empty EncryptedExtensions block.
@@ -1197,6 +1208,10 @@ type ProtocolBugs struct {
 
 	// SendNoPSKBinder, if true, causes the client to send no PSK binders.
 	SendNoPSKBinder bool
+
+	// SendExtraPSKBinder, if true, causes the client to send an extra PSK
+	// binder.
+	SendExtraPSKBinder bool
 
 	// PSKBinderFirst, if true, causes the client to send the PSK Binder
 	// extension as the first extension instead of the last extension.
