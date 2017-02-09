@@ -2349,7 +2349,7 @@ func addBasicTests() {
 				},
 			},
 			shouldFail:         true,
-			expectedError:      ":NO_COMPRESSION_SPECIFIED:",
+			expectedError:      ":INVALID_COMPRESSION_LIST:",
 			expectedLocalError: "remote error: illegal parameter",
 		},
 		{
@@ -3417,6 +3417,7 @@ func addStateMachineCoverageTests(config stateMachineTestConfig) {
 			},
 		},
 		resumeSession: true,
+		flags:         []string{"-expect-no-session-id"},
 	})
 	tests = append(tests, testCase{
 		testType: serverTest,
@@ -3426,6 +3427,7 @@ func addStateMachineCoverageTests(config stateMachineTestConfig) {
 			SessionTicketsDisabled: true,
 		},
 		resumeSession: true,
+		flags:         []string{"-expect-session-id"},
 	})
 	tests = append(tests, testCase{
 		testType: serverTest,
@@ -3467,6 +3469,9 @@ func addStateMachineCoverageTests(config stateMachineTestConfig) {
 			},
 			resumeSession:        true,
 			resumeRenewedSession: true,
+			// TLS 1.3 uses tickets, so the session should not be
+			// cached statefully.
+			flags: []string{"-expect-no-session-id"},
 		})
 
 		tests = append(tests, testCase{
@@ -8437,13 +8442,22 @@ func addSessionTicketTests() {
 		testType: clientTest,
 		name:     "TLS13-SendTicketEarlyDataInfo",
 		config: Config{
-			MaxVersion: VersionTLS13,
-			Bugs: ProtocolBugs{
-				SendTicketEarlyDataInfo: 16384,
-			},
+			MaxVersion:       VersionTLS13,
+			MaxEarlyDataSize: 16384,
 		},
 		flags: []string{
+			"-enable-early-data",
 			"-expect-early-data-info",
+		},
+	})
+
+	// Test that 0-RTT tickets are ignored in clients unless opted in.
+	testCases = append(testCases, testCase{
+		testType: clientTest,
+		name:     "TLS13-SendTicketEarlyDataInfo-Disabled",
+		config: Config{
+			MaxVersion:       VersionTLS13,
+			MaxEarlyDataSize: 16384,
 		},
 	})
 
@@ -8451,9 +8465,9 @@ func addSessionTicketTests() {
 		testType: clientTest,
 		name:     "TLS13-DuplicateTicketEarlyDataInfo",
 		config: Config{
-			MaxVersion: VersionTLS13,
+			MaxVersion:       VersionTLS13,
+			MaxEarlyDataSize: 16384,
 			Bugs: ProtocolBugs{
-				SendTicketEarlyDataInfo:      16384,
 				DuplicateTicketEarlyDataInfo: true,
 			},
 		},
@@ -8474,6 +8488,40 @@ func addSessionTicketTests() {
 		flags: []string{
 			"-enable-early-data",
 		},
+	})
+
+	// Test that, in TLS 1.3, the server-offered NewSessionTicket lifetime
+	// is honored.
+	testCases = append(testCases, testCase{
+		testType: clientTest,
+		name:     "TLS13-HonorServerSessionTicketLifetime",
+		config: Config{
+			MaxVersion: VersionTLS13,
+			Bugs: ProtocolBugs{
+				SendTicketLifetime: 20 * time.Second,
+			},
+		},
+		flags: []string{
+			"-resumption-delay", "19",
+		},
+		resumeSession: true,
+	})
+	testCases = append(testCases, testCase{
+		testType: clientTest,
+		name:     "TLS13-HonorServerSessionTicketLifetime-2",
+		config: Config{
+			MaxVersion: VersionTLS13,
+			Bugs: ProtocolBugs{
+				SendTicketLifetime: 20 * time.Second,
+				// The client should not offer the expired session.
+				ExpectNoTLS13PSK: true,
+			},
+		},
+		flags: []string{
+			"-resumption-delay", "21",
+		},
+		resumeSession: true,
+		expectResumeRejected: true,
 	})
 }
 
@@ -9176,7 +9224,7 @@ func addTLS13HandshakeTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				SendEarlyDataLength: 4,
+				SendFakeEarlyDataLength: 4,
 			},
 		},
 	})
@@ -9187,8 +9235,8 @@ func addTLS13HandshakeTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				SendEarlyDataLength:    4,
-				OmitEarlyDataExtension: true,
+				SendFakeEarlyDataLength: 4,
+				OmitEarlyDataExtension:  true,
 			},
 		},
 		shouldFail:    true,
@@ -9201,7 +9249,7 @@ func addTLS13HandshakeTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				SendEarlyDataLength: 16384 + 1,
+				SendFakeEarlyDataLength: 16384 + 1,
 			},
 		},
 		shouldFail:    true,
@@ -9214,8 +9262,8 @@ func addTLS13HandshakeTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				SendEarlyDataLength: 4,
-				InterleaveEarlyData: true,
+				SendFakeEarlyDataLength: 4,
+				InterleaveEarlyData:     true,
 			},
 		},
 		shouldFail:    true,
@@ -9228,7 +9276,7 @@ func addTLS13HandshakeTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				SendEarlyDataLength: 4,
+				SendFakeEarlyDataLength: 4,
 			},
 		},
 		shouldFail:    true,
@@ -9242,7 +9290,7 @@ func addTLS13HandshakeTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				SendEarlyDataLength: 4,
+				SendFakeEarlyDataLength: 4,
 			},
 			DefaultCurves: []CurveID{},
 		},
@@ -9254,8 +9302,8 @@ func addTLS13HandshakeTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				SendEarlyDataLength: 4,
-				InterleaveEarlyData: true,
+				SendFakeEarlyDataLength: 4,
+				InterleaveEarlyData:     true,
 			},
 			DefaultCurves: []CurveID{},
 		},
@@ -9269,7 +9317,7 @@ func addTLS13HandshakeTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				SendEarlyDataLength: 16384 + 1,
+				SendFakeEarlyDataLength: 16384 + 1,
 			},
 			DefaultCurves: []CurveID{},
 		},
@@ -9285,8 +9333,8 @@ func addTLS13HandshakeTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				SendEarlyAlert:      true,
-				SendEarlyDataLength: 4,
+				SendEarlyAlert:          true,
+				SendFakeEarlyDataLength: 4,
 			},
 			DefaultCurves: []CurveID{},
 		},
@@ -10101,8 +10149,8 @@ func addShortHeaderTests() {
 		config: Config{
 			MaxVersion: VersionTLS13,
 			Bugs: ProtocolBugs{
-				EnableShortHeader:   true,
-				SendEarlyDataLength: 1,
+				EnableShortHeader:       true,
+				SendFakeEarlyDataLength: 1,
 			},
 		},
 		flags:         []string{"-enable-short-header"},

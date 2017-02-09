@@ -1726,25 +1726,46 @@ OPENSSL_EXPORT SSL_SESSION *SSL_get_session(const SSL *ssl);
 OPENSSL_EXPORT SSL_SESSION *SSL_get1_session(SSL *ssl);
 
 /* SSL_DEFAULT_SESSION_TIMEOUT is the default lifetime, in seconds, of a
- * session. */
+ * session in TLS 1.2 or earlier. This is how long we are willing to use the
+ * secret to encrypt traffic without fresh key material. */
 #define SSL_DEFAULT_SESSION_TIMEOUT (2 * 60 * 60)
 
-/* SSL_CTX_set_timeout sets the lifetime, in seconds, of sessions created in
- * |ctx| to |timeout|. */
+/* SSL_DEFAULT_SESSION_PSK_DHE_TIMEOUT is the default lifetime, in seconds, of a
+ * session for TLS 1.3 psk_dhe_ke. This is how long we are willing to use the
+ * secret as an authenticator. */
+#define SSL_DEFAULT_SESSION_PSK_DHE_TIMEOUT (2 * 24 * 60 * 60)
+
+/* SSL_DEFAULT_SESSION_AUTH_TIMEOUT is the default non-renewable lifetime, in
+ * seconds, of a TLS 1.3 session. This is how long we are willing to trust the
+ * signature in the initial handshake. */
+#define SSL_DEFAULT_SESSION_AUTH_TIMEOUT (7 * 24 * 60 * 60)
+
+/* SSL_CTX_set_timeout sets the lifetime, in seconds, of TLS 1.2 (or earlier)
+ * sessions created in |ctx| to |timeout|. */
 OPENSSL_EXPORT long SSL_CTX_set_timeout(SSL_CTX *ctx, long timeout);
 
-/* SSL_CTX_get_timeout returns the lifetime, in seconds, of sessions created in
- * |ctx|. */
+/* SSL_CTX_set_session_psk_dhe_timeout sets the lifetime, in seconds, of TLS 1.3
+ * sessions created in |ctx| to |timeout|. */
+OPENSSL_EXPORT void SSL_CTX_set_session_psk_dhe_timeout(SSL_CTX *ctx,
+                                                        long timeout);
+
+/* SSL_CTX_get_timeout returns the lifetime, in seconds, of TLS 1.2 (or earlier)
+ * sessions created in |ctx|. */
 OPENSSL_EXPORT long SSL_CTX_get_timeout(const SSL_CTX *ctx);
 
-/* SSL_set_session_timeout sets the default lifetime, in seconds, of the
- * session created in |ssl| to |timeout|, and returns the old value.
+/* SSL_set_session_timeout sets the default lifetime, in seconds, of a TLS 1.2
+ * (or earlier) session created in |ssl| to |timeout|, and returns the old
+ * value.
  *
  * By default the value |SSL_DEFAULT_SESSION_TIMEOUT| is used, which can be
  * overridden at the context level by calling |SSL_CTX_set_timeout|.
  *
  * If |timeout| is zero the newly created session will not be resumable. */
 OPENSSL_EXPORT long SSL_set_session_timeout(SSL *ssl, long timeout);
+
+/* SSL_set_session_psk_dhe_timeout sets the lifetime, in seconds, of TLS 1.3
+ * sessions created in |ssl| to |timeout|. */
+OPENSSL_EXPORT void SSL_set_session_psk_dhe_timeout(SSL *ssl, long timeout);
 
 /* SSL_CTX_set_session_id_context sets |ctx|'s session ID context to |sid_ctx|.
  * It returns one on success and zero on error. The session ID context is an
@@ -2218,9 +2239,8 @@ OPENSSL_EXPORT int SSL_get_ex_data_X509_STORE_CTX_idx(void);
  * zero on fatal error. It may use |X509_STORE_CTX_set_error| to set a
  * verification result.
  *
- * The callback may use either the |arg| parameter or
- * |SSL_get_ex_data_X509_STORE_CTX_idx| to recover the associated |SSL|
- * object. */
+ * The callback may use |SSL_get_ex_data_X509_STORE_CTX_idx| to recover the
+ * |SSL| object from |store_ctx|. */
 OPENSSL_EXPORT void SSL_CTX_set_cert_verify_callback(
     SSL_CTX *ctx, int (*callback)(X509_STORE_CTX *store_ctx, void *arg),
     void *arg);
@@ -2968,6 +2988,10 @@ OPENSSL_EXPORT int SSL_CTX_set_max_send_fragment(SSL_CTX *ctx,
 OPENSSL_EXPORT int SSL_set_max_send_fragment(SSL *ssl,
                                              size_t max_send_fragment);
 
+/* SSL_get_v2clienthello_count returns the total number of V2ClientHellos that
+ * are accepted. */
+OPENSSL_EXPORT uint64_t SSL_get_v2clienthello_count(void);
+
 /* ssl_early_callback_ctx (aka |SSL_CLIENT_HELLO|) is passed to certain
  * callbacks that are called very early on during the server handshake. At this
  * point, much of the SSL* hasn't been filled out and only the ClientHello can
@@ -3646,7 +3670,9 @@ OPENSSL_EXPORT int SSL_enable_tls_channel_id(SSL *ssl);
 
 /* BIO_f_ssl returns a |BIO_METHOD| that can wrap an |SSL*| in a |BIO*|. Note
  * that this has quite different behaviour from the version in OpenSSL (notably
- * that it doesn't try to auto renegotiate). */
+ * that it doesn't try to auto renegotiate).
+ *
+ * IMPORTANT: if you are not curl, don't use this. */
 OPENSSL_EXPORT const BIO_METHOD *BIO_f_ssl(void);
 
 /* BIO_set_ssl sets |ssl| as the underlying connection for |bio|, which must
@@ -3732,8 +3758,13 @@ struct ssl_session_st {
    * non-fatal certificate errors. */
   long verify_result;
 
-  /* timeout is the lifetime of the session in seconds, measured from |time|. */
+  /* timeout is the lifetime of the session in seconds, measured from |time|.
+   * This is renewable up to |auth_timeout|. */
   long timeout;
+
+  /* auth_timeout is the non-renewable lifetime of the session in seconds,
+   * measured from |time|. */
+  long auth_timeout;
 
   /* time is the time the session was issued, measured in seconds from the UNIX
    * epoch. */
@@ -3868,9 +3899,13 @@ struct ssl_ctx_st {
    * SSL_accept which cache SSL_SESSIONS. */
   int session_cache_mode;
 
-  /* If timeout is not 0, it is the default timeout value set when SSL_new() is
-   * called.  This has been put in to make life easier to set things up */
+  /* session_timeout is the default lifetime for new sessions in TLS 1.2 and
+   * earlier, in seconds. */
   long session_timeout;
+
+  /* session_psk_dhe_timeout is the default lifetime for new sessions in TLS
+   * 1.3, in seconds. */
+  long session_psk_dhe_timeout;
 
   /* If this callback is not null, it will be called each time a session id is
    * added to the cache.  If this function returns 1, it means that the
@@ -4078,182 +4113,6 @@ struct ssl_ctx_st {
 
   /* TODO(agl): remove once node.js no longer references this. */
   int freelist_max_len;
-};
-
-typedef struct ssl_handshake_st SSL_HANDSHAKE;
-
-struct ssl_st {
-  /* method is the method table corresponding to the current protocol (DTLS or
-   * TLS). */
-  const SSL_PROTOCOL_METHOD *method;
-
-  /* version is the protocol version. */
-  int version;
-
-  /* max_version is the maximum acceptable protocol version. Note this version
-   * is normalized in DTLS. */
-  uint16_t max_version;
-
-  /* min_version is the minimum acceptable protocol version. Note this version
-   * is normalized in DTLS. */
-  uint16_t min_version;
-
-  uint16_t max_send_fragment;
-
-  /* There are 2 BIO's even though they are normally both the same. This is so
-   * data can be read and written to different handlers */
-
-  BIO *rbio; /* used by SSL_read */
-  BIO *wbio; /* used by SSL_write */
-
-  /* bbio, if non-NULL, is a buffer placed in front of |wbio| to pack handshake
-   * messages within one flight into a single |BIO_write|. In this case, |wbio|
-   * and |bbio| are equal and the true caller-configured BIO is
-   * |bbio->next_bio|.
-   *
-   * TODO(davidben): This does not work right for DTLS. It assumes the MTU is
-   * smaller than the buffer size so that the buffer's internal flushing never
-   * kicks in. It also doesn't kick in for DTLS retransmission. Replace this
-   * with a better mechanism. */
-  BIO *bbio;
-
-  int (*handshake_func)(SSL_HANDSHAKE *hs);
-
-  BUF_MEM *init_buf; /* buffer used during init */
-
-  /* init_msg is a pointer to the current handshake message body. */
-  const uint8_t *init_msg;
-  /* init_num is the length of the current handshake message body. */
-  uint32_t init_num;
-
-  /* init_off, in DTLS, is the number of bytes of the current message that have
-   * been written. */
-  uint32_t init_off;
-
-  struct ssl3_state_st *s3;  /* SSLv3 variables */
-  struct dtls1_state_st *d1; /* DTLSv1 variables */
-
-  /* callback that allows applications to peek at protocol messages */
-  void (*msg_callback)(int write_p, int version, int content_type,
-                       const void *buf, size_t len, SSL *ssl, void *arg);
-  void *msg_callback_arg;
-
-  X509_VERIFY_PARAM *param;
-
-  /* crypto */
-  struct ssl_cipher_preference_list_st *cipher_list;
-
-  /* session info */
-
-  /* client cert? */
-  /* This is used to hold the server certificate used */
-  struct cert_st /* CERT */ *cert;
-
-  /* This holds a variable that indicates what we were doing when a 0 or -1 is
-   * returned.  This is needed for non-blocking IO so we know what request
-   * needs re-doing when in SSL_accept or SSL_connect */
-  int rwstate;
-
-  /* initial_timeout_duration_ms is the default DTLS timeout duration in
-   * milliseconds. It's used to initialize the timer any time it's restarted. */
-  unsigned initial_timeout_duration_ms;
-
-  /* the session_id_context is used to ensure sessions are only reused
-   * in the appropriate context */
-  uint8_t sid_ctx_length;
-  uint8_t sid_ctx[SSL_MAX_SID_CTX_LENGTH];
-
-  /* session is the configured session to be offered by the client. This session
-   * is immutable. */
-  SSL_SESSION *session;
-
-  int (*verify_callback)(int ok,
-                         X509_STORE_CTX *ctx); /* fail if callback returns 0 */
-
-  void (*info_callback)(const SSL *ssl, int type, int value);
-
-  /* Server-only: psk_identity_hint is the identity hint to send in
-   * PSK-based key exchanges. */
-  char *psk_identity_hint;
-
-  unsigned int (*psk_client_callback)(SSL *ssl, const char *hint,
-                                      char *identity,
-                                      unsigned int max_identity_len,
-                                      uint8_t *psk, unsigned int max_psk_len);
-  unsigned int (*psk_server_callback)(SSL *ssl, const char *identity,
-                                      uint8_t *psk, unsigned int max_psk_len);
-
-  SSL_CTX *ctx;
-
-  /* extra application data */
-  CRYPTO_EX_DATA ex_data;
-
-  /* for server side, keep the list of CA_dn we can use */
-  STACK_OF(X509_NAME) *client_CA;
-
-  uint32_t options; /* protocol behaviour */
-  uint32_t mode;    /* API behaviour */
-  uint32_t max_cert_list;
-  char *tlsext_hostname;
-  size_t supported_group_list_len;
-  uint16_t *supported_group_list; /* our list */
-
-  SSL_CTX *initial_ctx; /* initial ctx, used to store sessions */
-
-  /* srtp_profiles is the list of configured SRTP protection profiles for
-   * DTLS-SRTP. */
-  STACK_OF(SRTP_PROTECTION_PROFILE) *srtp_profiles;
-
-  /* srtp_profile is the selected SRTP protection profile for
-   * DTLS-SRTP. */
-  const SRTP_PROTECTION_PROFILE *srtp_profile;
-
-  /* The client's Channel ID private key. */
-  EVP_PKEY *tlsext_channel_id_private;
-
-  /* For a client, this contains the list of supported protocols in wire
-   * format. */
-  uint8_t *alpn_client_proto_list;
-  unsigned alpn_client_proto_list_len;
-
-  /* renegotiate_mode controls how peer renegotiation attempts are handled. */
-  enum ssl_renegotiate_mode_t renegotiate_mode;
-
-  /* verify_mode is a bitmask of |SSL_VERIFY_*| values. */
-  uint8_t verify_mode;
-
-  /* server is true iff the this SSL* is the server half. Note: before the SSL*
-   * is initialized by either SSL_set_accept_state or SSL_set_connect_state,
-   * the side is not determined. In this state, server is always false. */
-  unsigned server:1;
-
-  /* quiet_shutdown is true if the connection should not send a close_notify on
-   * shutdown. */
-  unsigned quiet_shutdown:1;
-
-  /* Enable signed certificate time stamps. Currently client only. */
-  unsigned signed_cert_timestamps_enabled:1;
-
-  /* ocsp_stapling_enabled is only used by client connections and indicates
-   * whether OCSP stapling will be requested. */
-  unsigned ocsp_stapling_enabled:1;
-
-  /* tlsext_channel_id_enabled is copied from the |SSL_CTX|. For a server,
-   * means that we'll accept Channel IDs from clients. For a client, means that
-   * we'll advertise support. */
-  unsigned tlsext_channel_id_enabled:1;
-
-  /* retain_only_sha256_of_client_certs is true if we should compute the SHA256
-   * hash of the peer's certificate and then discard it to save memory and
-   * session space. Only effective on the server side. */
-  unsigned retain_only_sha256_of_client_certs:1;
-
-  /* session_timeout is the default lifetime in seconds of the session
-   * created in this connection. */
-  long session_timeout;
-
-  /* OCSP response to be sent to the client, if requested. */
-  CRYPTO_BUFFER *ocsp_response;
 };
 
 
