@@ -187,6 +187,10 @@ OPENSSL_EXPORT const SSL_METHOD *TLS_method(void);
 /* DTLS_method is the |SSL_METHOD| used for DTLS connections. */
 OPENSSL_EXPORT const SSL_METHOD *DTLS_method(void);
 
+/* TLS_with_buffers_method is like |TLS_method|, but avoids all use of
+ * crypto/x509. */
+OPENSSL_EXPORT const SSL_METHOD *TLS_with_buffers_method(void);
+
 /* SSL_CTX_new returns a newly-allocated |SSL_CTX| with default settings or NULL
  * on error. */
 OPENSSL_EXPORT SSL_CTX *SSL_CTX_new(const SSL_METHOD *method);
@@ -237,8 +241,8 @@ OPENSSL_EXPORT int SSL_is_dtls(const SSL *ssl);
  * takes ownership of the two |BIO|s. If |rbio| and |wbio| are the same, |ssl|
  * only takes ownership of one reference.
  *
- * In DTLS, if |rbio| is blocking, it must handle
- * |BIO_CTRL_DGRAM_SET_NEXT_TIMEOUT| control requests to set read timeouts.
+ * In DTLS, |rbio| must be non-blocking to properly handle timeouts and
+ * retransmits.
  *
  * If |rbio| is the same as the currently configured |BIO| for reading, that
  * side is left untouched and is not freed.
@@ -318,12 +322,11 @@ OPENSSL_EXPORT int SSL_set_wfd(SSL *ssl, int fd);
  * returns <= 0. The caller should pass the value into |SSL_get_error| to
  * determine how to proceed.
  *
- * In DTLS, if the read |BIO| is non-blocking, the caller must drive
- * retransmissions. Whenever |SSL_get_error| signals |SSL_ERROR_WANT_READ|, use
- * |DTLSv1_get_timeout| to determine the current timeout. If it expires before
- * the next retry, call |DTLSv1_handle_timeout|. Note that DTLS handshake
- * retransmissions use fresh sequence numbers, so it is not sufficient to replay
- * packets at the transport.
+ * In DTLS, the caller must drive retransmissions. Whenever |SSL_get_error|
+ * signals |SSL_ERROR_WANT_READ|, use |DTLSv1_get_timeout| to determine the
+ * current timeout. If it expires before the next retry, call
+ * |DTLSv1_handle_timeout|. Note that DTLS handshake retransmissions use fresh
+ * sequence numbers, so it is not sufficient to replay packets at the transport.
  *
  * TODO(davidben): Ensure 0 is only returned on transport EOF.
  * https://crbug.com/466303. */
@@ -355,7 +358,7 @@ OPENSSL_EXPORT int SSL_pending(const SSL *ssl);
 
 /* SSL_write writes up to |num| bytes from |buf| into |ssl|. It implicitly runs
  * any pending handshakes, including renegotiations when enabled. On success, it
- * returns the number of bytes read. Otherwise, it returns <= 0. The caller
+ * returns the number of bytes written. Otherwise, it returns <= 0. The caller
  * should pass the value into |SSL_get_error| to determine how to proceed.
  *
  * In TLS, a non-blocking |SSL_write| differs from non-blocking |write| in that
@@ -1047,10 +1050,7 @@ enum ssl_private_key_result_t {
 typedef struct ssl_private_key_method_st {
   /* type returns the type of the key used by |ssl|. For RSA keys, return
    * |NID_rsaEncryption|. For ECDSA keys, return |NID_X9_62_prime256v1|,
-   * |NID_secp384r1|, or |NID_secp521r1|, depending on the curve.
-   *
-   * Returning |EVP_PKEY_EC| for ECDSA keys is deprecated and may result in
-   * connection failures in TLS 1.3. */
+   * |NID_secp384r1|, or |NID_secp521r1|, depending on the curve. */
   int (*type)(SSL *ssl);
 
   /* max_signature_len returns the maximum length of a signature signed by the
@@ -1159,9 +1159,6 @@ OPENSSL_EXPORT uint32_t SSL_CIPHER_get_id(const SSL_CIPHER *cipher);
 /* SSL_CIPHER_is_AES returns one if |cipher| uses AES (either GCM or CBC
  * mode). */
 OPENSSL_EXPORT int SSL_CIPHER_is_AES(const SSL_CIPHER *cipher);
-
-/* SSL_CIPHER_has_MD5_HMAC returns zero. */
-OPENSSL_EXPORT int SSL_CIPHER_has_MD5_HMAC(const SSL_CIPHER *cipher);
 
 /* SSL_CIPHER_has_SHA1_HMAC returns one if |cipher| uses HMAC-SHA1. */
 OPENSSL_EXPORT int SSL_CIPHER_has_SHA1_HMAC(const SSL_CIPHER *cipher);
@@ -1313,7 +1310,9 @@ OPENSSL_EXPORT int SSL_CIPHER_get_bits(const SSL_CIPHER *cipher,
  *   |TLSv1_2| matches ciphers new in TLS 1.2. This is confusing and should not
  *   be used.
  *
- * Unknown rules silently match nothing.
+ * Unknown rules are silently ignored by legacy APIs, and rejected by APIs with
+ * "strict" in the name, which should be preferred. Cipher lists can be long and
+ * it's easy to commit typos.
  *
  * The special |@STRENGTH| directive will sort all enabled ciphers by strength.
  *
@@ -1342,13 +1341,34 @@ OPENSSL_EXPORT int SSL_CIPHER_get_bits(const SSL_CIPHER *cipher,
  * substituted when a cipher string starts with 'DEFAULT'. */
 #define SSL_DEFAULT_CIPHER_LIST "ALL"
 
+/* SSL_CTX_set_strict_cipher_list configures the cipher list for |ctx|,
+ * evaluating |str| as a cipher string and returning error if |str| contains
+ * anything meaningless. It returns one on success and zero on failure. */
+OPENSSL_EXPORT int SSL_CTX_set_strict_cipher_list(SSL_CTX *ctx,
+                                                  const char *str);
+
 /* SSL_CTX_set_cipher_list configures the cipher list for |ctx|, evaluating
- * |str| as a cipher string. It returns one on success and zero on failure. */
+ * |str| as a cipher string. It returns one on success and zero on failure.
+ *
+ * Prefer to use |SSL_CTX_set_strict_cipher_list|. This function tolerates
+ * garbage inputs, unless an empty cipher list results. */
 OPENSSL_EXPORT int SSL_CTX_set_cipher_list(SSL_CTX *ctx, const char *str);
 
+/* SSL_set_strict_cipher_list configures the cipher list for |ssl|, evaluating
+ * |str| as a cipher string and returning error if |str| contains anything
+ * meaningless. It returns one on success and zero on failure. */
+OPENSSL_EXPORT int SSL_set_strict_cipher_list(SSL *ssl, const char *str);
+
 /* SSL_set_cipher_list configures the cipher list for |ssl|, evaluating |str| as
- * a cipher string. It returns one on success and zero on failure. */
+ * a cipher string. It returns one on success and zero on failure.
+ *
+ * Prefer to use |SSL_set_strict_cipher_list|. This function tolerates garbage
+ * inputs, unless an empty cipher list results. */
 OPENSSL_EXPORT int SSL_set_cipher_list(SSL *ssl, const char *str);
+
+/* SSL_CTX_get_ciphers returns the cipher list for |ctx|, in order of
+ * preference. */
+OPENSSL_EXPORT STACK_OF(SSL_CIPHER) *SSL_CTX_get_ciphers(const SSL_CTX *ctx);
 
 /* SSL_get_ciphers returns the cipher list for |ssl|, in order of preference. */
 OPENSSL_EXPORT STACK_OF(SSL_CIPHER) *SSL_get_ciphers(const SSL *ssl);
@@ -1378,11 +1398,9 @@ OPENSSL_EXPORT int SSL_in_false_start(const SSL *ssl);
 OPENSSL_EXPORT X509 *SSL_get_peer_certificate(const SSL *ssl);
 
 /* SSL_get_peer_cert_chain returns the peer's certificate chain or NULL if
- * unavailable or the peer did not use certificates. This is the unverified
- * list of certificates as sent by the peer, not the final chain built during
- * verification. For historical reasons, this value may not be available if
- * resuming a serialized |SSL_SESSION|. The caller does not take ownership of
- * the result.
+ * unavailable or the peer did not use certificates. This is the unverified list
+ * of certificates as sent by the peer, not the final chain built during
+ * verification. The caller does not take ownership of the result.
  *
  * WARNING: This function behaves differently between client and server. If
  * |ssl| is a server, the returned chain does not include the leaf certificate.
@@ -1390,11 +1408,9 @@ OPENSSL_EXPORT X509 *SSL_get_peer_certificate(const SSL *ssl);
 OPENSSL_EXPORT STACK_OF(X509) *SSL_get_peer_cert_chain(const SSL *ssl);
 
 /* SSL_get_peer_full_cert_chain returns the peer's certificate chain, or NULL if
- * unavailable or the peer did not use certificates. This is the unverified
- * list of certificates as sent by the peer, not the final chain built during
- * verification. For historical reasons, this value may not be available if
- * resuming a serialized |SSL_SESSION|. The caller does not take ownership of
- * the result.
+ * unavailable or the peer did not use certificates. This is the unverified list
+ * of certificates as sent by the peer, not the final chain built during
+ * verification. The caller does not take ownership of the result.
  *
  * This is the same as |SSL_get_peer_cert_chain| except that this function
  * always returns the full chain, i.e. the first element of the return value
@@ -1402,6 +1418,15 @@ OPENSSL_EXPORT STACK_OF(X509) *SSL_get_peer_cert_chain(const SSL *ssl);
  * |SSL_get_peer_cert_chain| returns only the intermediate certificates if the
  * |ssl| is a server. */
 OPENSSL_EXPORT STACK_OF(X509) *SSL_get_peer_full_cert_chain(const SSL *ssl);
+
+/* SSL_get0_peer_certificates returns the peer's certificate chain, or NULL if
+ * unavailable or the peer did not use certificates. This is the unverified list
+ * of certificates as sent by the peer, not the final chain built during
+ * verification. The caller does not take ownership of the result.
+ *
+ * This is the |CRYPTO_BUFFER| variant of |SSL_get_peer_full_cert_chain|. */
+OPENSSL_EXPORT STACK_OF(CRYPTO_BUFFER) *
+    SSL_get0_peer_certificates(const SSL *ssl);
 
 /* SSL_get0_signed_cert_timestamp_list sets |*out| and |*out_len| to point to
  * |*out_len| bytes of SCT information from the server. This is only valid if
@@ -1611,10 +1636,10 @@ OPENSSL_EXPORT const uint8_t *SSL_SESSION_get_id(const SSL_SESSION *session,
 
 /* SSL_SESSION_get_time returns the time at which |session| was established in
  * seconds since the UNIX epoch. */
-OPENSSL_EXPORT long SSL_SESSION_get_time(const SSL_SESSION *session);
+OPENSSL_EXPORT uint64_t SSL_SESSION_get_time(const SSL_SESSION *session);
 
 /* SSL_SESSION_get_timeout returns the lifetime of |session| in seconds. */
-OPENSSL_EXPORT long SSL_SESSION_get_timeout(const SSL_SESSION *session);
+OPENSSL_EXPORT uint32_t SSL_SESSION_get_timeout(const SSL_SESSION *session);
 
 /* SSL_SESSION_get0_peer returns the peer leaf certificate stored in
  * |session|.
@@ -1631,12 +1656,14 @@ OPENSSL_EXPORT size_t SSL_SESSION_get_master_key(const SSL_SESSION *session,
 /* SSL_SESSION_set_time sets |session|'s creation time to |time| and returns
  * |time|. This function may be useful in writing tests but otherwise should not
  * be used. */
-OPENSSL_EXPORT long SSL_SESSION_set_time(SSL_SESSION *session, long time);
+OPENSSL_EXPORT uint64_t SSL_SESSION_set_time(SSL_SESSION *session,
+                                             uint64_t time);
 
 /* SSL_SESSION_set_timeout sets |session|'s timeout to |timeout| and returns
  * one. This function may be useful in writing tests but otherwise should not
  * be used. */
-OPENSSL_EXPORT long SSL_SESSION_set_timeout(SSL_SESSION *session, long timeout);
+OPENSSL_EXPORT uint32_t SSL_SESSION_set_timeout(SSL_SESSION *session,
+                                                uint32_t timeout);
 
 /* SSL_SESSION_set1_id_context sets |session|'s session ID context (see
  * |SSL_CTX_set_session_id_context|) to |sid_ctx|. It returns one on success and
@@ -1750,16 +1777,16 @@ OPENSSL_EXPORT SSL_SESSION *SSL_get1_session(SSL *ssl);
 
 /* SSL_CTX_set_timeout sets the lifetime, in seconds, of TLS 1.2 (or earlier)
  * sessions created in |ctx| to |timeout|. */
-OPENSSL_EXPORT long SSL_CTX_set_timeout(SSL_CTX *ctx, long timeout);
+OPENSSL_EXPORT uint32_t SSL_CTX_set_timeout(SSL_CTX *ctx, uint32_t timeout);
 
 /* SSL_CTX_set_session_psk_dhe_timeout sets the lifetime, in seconds, of TLS 1.3
  * sessions created in |ctx| to |timeout|. */
 OPENSSL_EXPORT void SSL_CTX_set_session_psk_dhe_timeout(SSL_CTX *ctx,
-                                                        long timeout);
+                                                        uint32_t timeout);
 
 /* SSL_CTX_get_timeout returns the lifetime, in seconds, of TLS 1.2 (or earlier)
  * sessions created in |ctx|. */
-OPENSSL_EXPORT long SSL_CTX_get_timeout(const SSL_CTX *ctx);
+OPENSSL_EXPORT uint32_t SSL_CTX_get_timeout(const SSL_CTX *ctx);
 
 /* SSL_CTX_set_session_id_context sets |ctx|'s session ID context to |sid_ctx|.
  * It returns one on success and zero on error. The session ID context is an
@@ -1818,7 +1845,7 @@ OPENSSL_EXPORT int SSL_CTX_remove_session(SSL_CTX *ctx, SSL_SESSION *session);
 
 /* SSL_CTX_flush_sessions removes all sessions from |ctx| which have expired as
  * of time |time|. If |time| is zero, all sessions are removed. */
-OPENSSL_EXPORT void SSL_CTX_flush_sessions(SSL_CTX *ctx, long time);
+OPENSSL_EXPORT void SSL_CTX_flush_sessions(SSL_CTX *ctx, uint64_t time);
 
 /* SSL_CTX_sess_set_new_cb sets the callback to be called when a new session is
  * established and ready to be cached. If the session cache is disabled (the
@@ -2316,6 +2343,16 @@ OPENSSL_EXPORT void SSL_CTX_set_client_CA_list(SSL_CTX *ctx,
  * callbacks set by |SSL_CTX_set_cert_cb| and |SSL_CTX_set_client_cert_cb| or
  * when the handshake is paused because of them. */
 OPENSSL_EXPORT STACK_OF(X509_NAME) *SSL_get_client_CA_list(const SSL *ssl);
+
+/* SSL_get0_server_requested_CAs returns the CAs sent by a server to guide a
+ * client in certificate selection. They are a series of DER-encoded X.509
+ * names. This function may only be called during a callback set by
+ * |SSL_CTX_set_cert_cb| or when the handshake is paused because of it.
+ *
+ * The returned stack is owned by |ssl|, as are its contents. It should not be
+ * used past the point where the handshake is restarted after the callback. */
+OPENSSL_EXPORT STACK_OF(CRYPTO_BUFFER) *SSL_get0_server_requested_CAs(
+    const SSL *ssl);
 
 /* SSL_CTX_get_client_CA_list returns |ctx|'s client certificate CA list. */
 OPENSSL_EXPORT STACK_OF(X509_NAME) *
@@ -3179,11 +3216,6 @@ OPENSSL_EXPORT void SSL_CTX_set_grease_enabled(SSL_CTX *ctx, int enabled);
  * record with |ssl|. */
 OPENSSL_EXPORT size_t SSL_max_seal_overhead(const SSL *ssl);
 
-/* SSL_CTX_set_short_header_enabled configures whether a short record header in
- * TLS 1.3 may be negotiated. This allows client and server to negotiate
- * https://github.com/tlswg/tls13-spec/pull/762 for testing. */
-OPENSSL_EXPORT void SSL_CTX_set_short_header_enabled(SSL_CTX *ctx, int enabled);
-
 
 /* Deprecated functions. */
 
@@ -3757,15 +3789,15 @@ struct ssl_session_st {
 
   /* timeout is the lifetime of the session in seconds, measured from |time|.
    * This is renewable up to |auth_timeout|. */
-  long timeout;
+  uint32_t timeout;
 
   /* auth_timeout is the non-renewable lifetime of the session in seconds,
    * measured from |time|. */
-  long auth_timeout;
+  uint32_t auth_timeout;
 
   /* time is the time the session was issued, measured in seconds from the UNIX
    * epoch. */
-  long time;
+  uint64_t time;
 
   const SSL_CIPHER *cipher;
 
@@ -3905,11 +3937,11 @@ struct ssl_ctx_st {
 
   /* session_timeout is the default lifetime for new sessions in TLS 1.2 and
    * earlier, in seconds. */
-  long session_timeout;
+  uint32_t session_timeout;
 
   /* session_psk_dhe_timeout is the default lifetime for new sessions in TLS
    * 1.3, in seconds. */
-  long session_psk_dhe_timeout;
+  uint32_t session_psk_dhe_timeout;
 
   /* If this callback is not null, it will be called each time a session id is
    * added to the cache.  If this function returns 1, it means that the
@@ -3953,7 +3985,11 @@ struct ssl_ctx_st {
   void (*info_callback)(const SSL *ssl, int type, int value);
 
   /* what we put in client cert requests */
-  STACK_OF(X509_NAME) *client_CA;
+  STACK_OF(CRYPTO_BUFFER) *client_CA;
+
+  /* cached_x509_client_CA is a cache of parsed versions of the elements of
+   * |client_CA|. */
+  STACK_OF(X509_NAME) *cached_x509_client_CA;
 
 
   /* Default values to use in SSL structures follow (these are copied by
@@ -4101,10 +4137,6 @@ struct ssl_ctx_st {
   /* grease_enabled is one if draft-davidben-tls-grease-01 is enabled and zero
    * otherwise. */
   unsigned grease_enabled:1;
-
-  /* short_header_enabled is one if a short record header in TLS 1.3 may
-   * be negotiated and zero otherwise. */
-  unsigned short_header_enabled:1;
 };
 
 
@@ -4439,6 +4471,7 @@ BORINGSSL_MAKE_DELETER(SSL_SESSION, SSL_SESSION_free)
 #define SSL_R_TOO_MUCH_SKIPPED_EARLY_DATA 270
 #define SSL_R_PSK_IDENTITY_BINDER_COUNT_MISMATCH 271
 #define SSL_R_CANNOT_PARSE_LEAF_CERT 272
+#define SSL_R_SERVER_CERT_CHANGED 273
 #define SSL_R_SSLV3_ALERT_CLOSE_NOTIFY 1000
 #define SSL_R_SSLV3_ALERT_UNEXPECTED_MESSAGE 1010
 #define SSL_R_SSLV3_ALERT_BAD_RECORD_MAC 1020
