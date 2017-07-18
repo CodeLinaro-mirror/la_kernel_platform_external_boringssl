@@ -446,7 +446,8 @@ int tls1_check_group_id(SSL *ssl, uint16_t group_id) {
  * BoringSSL. Once the change in Chrome has stuck and the values are finalized,
  * restore them. */
 static const uint16_t kVerifySignatureAlgorithms[] = {
-    /* Prefer SHA-256 algorithms. */
+    /* List our preferred algorithms first. */
+    SSL_SIGN_ED25519,
     SSL_SIGN_ECDSA_SECP256R1_SHA256,
 #if !defined(BORINGSSL_ANDROID_SYSTEM)
     SSL_SIGN_RSA_PSS_SHA256,
@@ -481,7 +482,8 @@ static const uint16_t kVerifySignatureAlgorithms[] = {
  * BoringSSL. Once the change in Chrome has stuck and the values are finalized,
  * restore them. */
 static const uint16_t kSignSignatureAlgorithms[] = {
-    /* Prefer SHA-256 algorithms. */
+    /* List our preferred algorithms first. */
+    SSL_SIGN_ED25519,
     SSL_SIGN_ECDSA_SECP256R1_SHA256,
 #if !defined(BORINGSSL_ANDROID_SYSTEM)
     SSL_SIGN_RSA_PSS_SHA256,
@@ -508,16 +510,47 @@ static const uint16_t kSignSignatureAlgorithms[] = {
     SSL_SIGN_RSA_PKCS1_SHA1,
 };
 
-size_t tls12_get_verify_sigalgs(const SSL *ssl, const uint16_t **out) {
-  *out = kVerifySignatureAlgorithms;
-  return OPENSSL_ARRAY_SIZE(kVerifySignatureAlgorithms);
+void SSL_CTX_set_ed25519_enabled(SSL_CTX *ctx, int enabled) {
+  ctx->ed25519_enabled = !!enabled;
 }
 
-int tls12_check_peer_sigalg(SSL *ssl, int *out_alert, uint16_t sigalg) {
-  const uint16_t *verify_sigalgs;
-  size_t num_verify_sigalgs = tls12_get_verify_sigalgs(ssl, &verify_sigalgs);
-  for (size_t i = 0; i < num_verify_sigalgs; i++) {
-    if (sigalg == verify_sigalgs[i]) {
+int tls12_add_verify_sigalgs(const SSL *ssl, CBB *out) {
+  const uint16_t *sigalgs = kVerifySignatureAlgorithms;
+  size_t num_sigalgs = OPENSSL_ARRAY_SIZE(kVerifySignatureAlgorithms);
+  if (ssl->ctx->num_verify_sigalgs != 0) {
+    sigalgs = ssl->ctx->verify_sigalgs;
+    num_sigalgs = ssl->ctx->num_verify_sigalgs;
+  }
+
+  for (size_t i = 0; i < num_sigalgs; i++) {
+    if (sigalgs == kVerifySignatureAlgorithms &&
+        sigalgs[i] == SSL_SIGN_ED25519 &&
+        !ssl->ctx->ed25519_enabled) {
+      continue;
+    }
+    if (!CBB_add_u16(out, sigalgs[i])) {
+      return 0;
+    }
+  }
+
+  return 1;
+}
+
+int tls12_check_peer_sigalg(SSL *ssl, uint8_t *out_alert, uint16_t sigalg) {
+  const uint16_t *sigalgs = kVerifySignatureAlgorithms;
+  size_t num_sigalgs = OPENSSL_ARRAY_SIZE(kVerifySignatureAlgorithms);
+  if (ssl->ctx->num_verify_sigalgs != 0) {
+    sigalgs = ssl->ctx->verify_sigalgs;
+    num_sigalgs = ssl->ctx->num_verify_sigalgs;
+  }
+
+  for (size_t i = 0; i < num_sigalgs; i++) {
+    if (sigalgs == kVerifySignatureAlgorithms &&
+        sigalgs[i] == SSL_SIGN_ED25519 &&
+        !ssl->ctx->ed25519_enabled) {
+      continue;
+    }
+    if (sigalg == sigalgs[i]) {
       return 1;
     }
   }
@@ -689,13 +722,8 @@ static int ext_sni_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
 
 static int ext_ri_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
   SSL *const ssl = hs->ssl;
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
   /* Renegotiation indication is not necessary in TLS 1.3. */
-  if (min_version >= TLS1_3_VERSION) {
+  if (hs->min_version >= TLS1_3_VERSION) {
     return 1;
   }
 
@@ -771,16 +799,24 @@ static int ext_ri_parse_serverhello(SSL_HANDSHAKE *hs, uint8_t *out_alert,
   }
 
   const uint8_t *d = CBS_data(&renegotiated_connection);
-  if (CRYPTO_memcmp(d, ssl->s3->previous_client_finished,
-        ssl->s3->previous_client_finished_len)) {
+  int ok = CRYPTO_memcmp(d, ssl->s3->previous_client_finished,
+                         ssl->s3->previous_client_finished_len) == 0;
+#if defined(BORINGSSL_UNSAFE_FUZZER_MODE)
+  ok = 1;
+#endif
+  if (!ok) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_RENEGOTIATION_MISMATCH);
     *out_alert = SSL_AD_HANDSHAKE_FAILURE;
     return 0;
   }
   d += ssl->s3->previous_client_finished_len;
 
-  if (CRYPTO_memcmp(d, ssl->s3->previous_server_finished,
-        ssl->s3->previous_server_finished_len)) {
+  ok = CRYPTO_memcmp(d, ssl->s3->previous_server_finished,
+                     ssl->s3->previous_server_finished_len) == 0;
+#if defined(BORINGSSL_UNSAFE_FUZZER_MODE)
+  ok = 1;
+#endif
+  if (!ok) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_RENEGOTIATION_MISMATCH);
     *out_alert = SSL_AD_ILLEGAL_PARAMETER;
     return 0;
@@ -850,13 +886,8 @@ static int ext_ri_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
  * https://tools.ietf.org/html/rfc7627 */
 
 static int ext_ems_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(hs->ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
   /* Extended master secret is not necessary in TLS 1.3. */
-  if (min_version >= TLS1_3_VERSION || max_version <= SSL3_VERSION) {
+  if (hs->min_version >= TLS1_3_VERSION || hs->max_version <= SSL3_VERSION) {
     return 1;
   }
 
@@ -934,13 +965,8 @@ static int ext_ems_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
 
 static int ext_ticket_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
   SSL *const ssl = hs->ssl;
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
   /* TLS 1.3 uses a different ticket extension. */
-  if (min_version >= TLS1_3_VERSION ||
+  if (hs->min_version >= TLS1_3_VERSION ||
       SSL_get_options(ssl) & SSL_OP_NO_TICKET) {
     return 1;
   }
@@ -952,14 +978,11 @@ static int ext_ticket_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
    * advertise the extension to avoid potentially breaking servers which carry
    * over the state from the previous handshake, such as OpenSSL servers
    * without upstream's 3c3f0259238594d77264a78944d409f2127642c4. */
-  uint16_t session_version;
   if (!ssl->s3->initial_handshake_complete &&
       ssl->session != NULL &&
       ssl->session->tlsext_tick != NULL &&
       /* Don't send TLS 1.3 session tickets in the ticket extension. */
-      ssl->method->version_from_wire(&session_version,
-                                     ssl->session->ssl_version) &&
-      session_version < TLS1_3_VERSION) {
+      SSL_SESSION_protocol_version(ssl->session) < TLS1_3_VERSION) {
     ticket_data = ssl->session->tlsext_tick;
     ticket_len = ssl->session->tlsext_ticklen;
   }
@@ -1022,32 +1045,16 @@ static int ext_ticket_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
 
 static int ext_sigalgs_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
   SSL *const ssl = hs->ssl;
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
-  if (max_version < TLS1_2_VERSION) {
+  if (hs->max_version < TLS1_2_VERSION) {
     return 1;
   }
-
-  const uint16_t *sigalgs;
-  const size_t num_sigalgs = tls12_get_verify_sigalgs(ssl, &sigalgs);
 
   CBB contents, sigalgs_cbb;
   if (!CBB_add_u16(out, TLSEXT_TYPE_signature_algorithms) ||
       !CBB_add_u16_length_prefixed(out, &contents) ||
-      !CBB_add_u16_length_prefixed(&contents, &sigalgs_cbb)) {
-    return 0;
-  }
-
-  for (size_t i = 0; i < num_sigalgs; i++) {
-    if (!CBB_add_u16(&sigalgs_cbb, sigalgs[i])) {
-      return 0;
-    }
-  }
-
-  if (!CBB_flush(out)) {
+      !CBB_add_u16_length_prefixed(&contents, &sigalgs_cbb) ||
+      !tls12_add_verify_sigalgs(ssl, &sigalgs_cbb) ||
+      !CBB_flush(out)) {
     return 0;
   }
 
@@ -1432,31 +1439,33 @@ static int ext_alpn_parse_serverhello(SSL_HANDSHAKE *hs, uint8_t *out_alert,
     return 0;
   }
 
-  /* Check that the protcol name is one of the ones we advertised. */
-  int protocol_ok = 0;
-  CBS client_protocol_name_list, client_protocol_name;
-  CBS_init(&client_protocol_name_list, ssl->alpn_client_proto_list,
-           ssl->alpn_client_proto_list_len);
-  while (CBS_len(&client_protocol_name_list) > 0) {
-    if (!CBS_get_u8_length_prefixed(&client_protocol_name_list,
-                                    &client_protocol_name)) {
-      *out_alert = SSL_AD_INTERNAL_ERROR;
+  if (!ssl->ctx->allow_unknown_alpn_protos) {
+    /* Check that the protocol name is one of the ones we advertised. */
+    int protocol_ok = 0;
+    CBS client_protocol_name_list, client_protocol_name;
+    CBS_init(&client_protocol_name_list, ssl->alpn_client_proto_list,
+             ssl->alpn_client_proto_list_len);
+    while (CBS_len(&client_protocol_name_list) > 0) {
+      if (!CBS_get_u8_length_prefixed(&client_protocol_name_list,
+                                      &client_protocol_name)) {
+        *out_alert = SSL_AD_INTERNAL_ERROR;
+        return 0;
+      }
+
+      if (CBS_len(&client_protocol_name) == CBS_len(&protocol_name) &&
+          OPENSSL_memcmp(CBS_data(&client_protocol_name),
+                         CBS_data(&protocol_name),
+                         CBS_len(&protocol_name)) == 0) {
+        protocol_ok = 1;
+        break;
+      }
+    }
+
+    if (!protocol_ok) {
+      OPENSSL_PUT_ERROR(SSL, SSL_R_INVALID_ALPN_PROTOCOL);
+      *out_alert = SSL_AD_ILLEGAL_PARAMETER;
       return 0;
     }
-
-    if (CBS_len(&client_protocol_name) == CBS_len(&protocol_name) &&
-        OPENSSL_memcmp(CBS_data(&client_protocol_name),
-                       CBS_data(&protocol_name),
-                       CBS_len(&protocol_name)) == 0) {
-      protocol_ok = 1;
-      break;
-    }
-  }
-
-  if (!protocol_ok) {
-    OPENSSL_PUT_ERROR(SSL, SSL_R_INVALID_ALPN_PROTOCOL);
-    *out_alert = SSL_AD_ILLEGAL_PARAMETER;
-    return 0;
   }
 
   if (!CBS_stow(&protocol_name, &ssl->s3->alpn_selected,
@@ -1790,13 +1799,8 @@ static int ext_ec_point_add_extension(SSL_HANDSHAKE *hs, CBB *out) {
 }
 
 static int ext_ec_point_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(hs->ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
   /* The point format extension is unneccessary in TLS 1.3. */
-  if (min_version >= TLS1_3_VERSION) {
+  if (hs->min_version >= TLS1_3_VERSION) {
     return 1;
   }
 
@@ -1864,41 +1868,19 @@ static int ext_ec_point_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
 
 static size_t ext_pre_shared_key_clienthello_length(SSL_HANDSHAKE *hs) {
   SSL *const ssl = hs->ssl;
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
+  if (hs->max_version < TLS1_3_VERSION || ssl->session == NULL ||
+      SSL_SESSION_protocol_version(ssl->session) < TLS1_3_VERSION) {
     return 0;
   }
 
-  uint16_t session_version;
-  if (max_version < TLS1_3_VERSION || ssl->session == NULL ||
-      !ssl->method->version_from_wire(&session_version,
-                                      ssl->session->ssl_version) ||
-      session_version < TLS1_3_VERSION) {
-    return 0;
-  }
-
-  const EVP_MD *digest = SSL_SESSION_get_digest(ssl->session, ssl);
-  if (digest == NULL) {
-    OPENSSL_PUT_ERROR(SSL, ERR_R_INTERNAL_ERROR);
-    return 0;
-  }
-
-  size_t binder_len = EVP_MD_size(digest);
+  size_t binder_len = EVP_MD_size(SSL_SESSION_get_digest(ssl->session));
   return 15 + ssl->session->tlsext_ticklen + binder_len;
 }
 
 static int ext_pre_shared_key_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
   SSL *const ssl = hs->ssl;
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
-  uint16_t session_version;
-  if (max_version < TLS1_3_VERSION || ssl->session == NULL ||
-      !ssl->method->version_from_wire(&session_version,
-                                      ssl->session->ssl_version) ||
-      session_version < TLS1_3_VERSION) {
+  if (hs->max_version < TLS1_3_VERSION || ssl->session == NULL ||
+      SSL_SESSION_protocol_version(ssl->session) < TLS1_3_VERSION) {
     return 1;
   }
 
@@ -1910,14 +1892,7 @@ static int ext_pre_shared_key_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
   /* Fill in a placeholder zero binder of the appropriate length. It will be
    * computed and filled in later after length prefixes are computed. */
   uint8_t zero_binder[EVP_MAX_MD_SIZE] = {0};
-
-  const EVP_MD *digest = SSL_SESSION_get_digest(ssl->session, ssl);
-  if (digest == NULL) {
-    OPENSSL_PUT_ERROR(SSL, ERR_R_INTERNAL_ERROR);
-    return 0;
-  }
-
-  size_t binder_len = EVP_MD_size(digest);
+  size_t binder_len = EVP_MD_size(SSL_SESSION_get_digest(ssl->session));
 
   CBB contents, identity, ticket, binders, binder;
   if (!CBB_add_u16(out, TLSEXT_TYPE_pre_shared_key) ||
@@ -2038,13 +2013,7 @@ int ssl_ext_pre_shared_key_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
 
 static int ext_psk_key_exchange_modes_add_clienthello(SSL_HANDSHAKE *hs,
                                                       CBB *out) {
-  SSL *const ssl = hs->ssl;
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
-  if (max_version < TLS1_3_VERSION) {
+  if (hs->max_version < TLS1_3_VERSION) {
     return 1;
   }
 
@@ -2088,14 +2057,11 @@ static int ext_psk_key_exchange_modes_parse_clienthello(SSL_HANDSHAKE *hs,
 
 static int ext_early_data_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
   SSL *const ssl = hs->ssl;
-  uint16_t session_version;
   if (ssl->session == NULL ||
-      !ssl->method->version_from_wire(&session_version,
-                                      ssl->session->ssl_version) ||
-      session_version < TLS1_3_VERSION ||
+      SSL_SESSION_protocol_version(ssl->session) < TLS1_3_VERSION ||
       ssl->session->ticket_max_early_data == 0 ||
       hs->received_hello_retry_request ||
-      !ssl->ctx->enable_early_data) {
+      !ssl->cert->enable_early_data) {
     return 1;
   }
 
@@ -2170,12 +2136,7 @@ static int ext_early_data_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
 
 static int ext_key_share_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
   SSL *const ssl = hs->ssl;
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
-  if (max_version < TLS1_3_VERSION) {
+  if (hs->max_version < TLS1_3_VERSION) {
     return 1;
   }
 
@@ -2334,7 +2295,8 @@ int ssl_ext_key_share_parse_clienthello(SSL_HANDSHAKE *hs, int *out_found,
       !SSL_ECDH_CTX_init(&group, group_id) ||
       !SSL_ECDH_CTX_accept(&group, &public_key, &secret, &secret_len, out_alert,
                            CBS_data(&peer_key), CBS_len(&peer_key)) ||
-      !CBB_finish(&public_key, &hs->public_key, &hs->public_key_len)) {
+      !CBB_finish(&public_key, &hs->ecdh_public_key,
+                  &hs->ecdh_public_key_len)) {
     OPENSSL_free(secret);
     SSL_ECDH_CTX_cleanup(&group);
     CBB_cleanup(&public_key);
@@ -2358,14 +2320,15 @@ int ssl_ext_key_share_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
       !CBB_add_u16_length_prefixed(out, &kse_bytes) ||
       !CBB_add_u16(&kse_bytes, group_id) ||
       !CBB_add_u16_length_prefixed(&kse_bytes, &public_key) ||
-      !CBB_add_bytes(&public_key, hs->public_key, hs->public_key_len) ||
+      !CBB_add_bytes(&public_key, hs->ecdh_public_key,
+                     hs->ecdh_public_key_len) ||
       !CBB_flush(out)) {
     return 0;
   }
 
-  OPENSSL_free(hs->public_key);
-  hs->public_key = NULL;
-  hs->public_key_len = 0;
+  OPENSSL_free(hs->ecdh_public_key);
+  hs->ecdh_public_key = NULL;
+  hs->ecdh_public_key_len = 0;
 
   hs->new_session->group_id = group_id;
   return 1;
@@ -2378,12 +2341,7 @@ int ssl_ext_key_share_add_serverhello(SSL_HANDSHAKE *hs, CBB *out) {
 
 static int ext_supported_versions_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
   SSL *const ssl = hs->ssl;
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
-  if (max_version <= TLS1_2_VERSION) {
+  if (hs->max_version <= TLS1_2_VERSION) {
     return 1;
   }
 
@@ -2400,13 +2358,8 @@ static int ext_supported_versions_add_clienthello(SSL_HANDSHAKE *hs, CBB *out) {
     return 0;
   }
 
-  for (uint16_t version = max_version; version >= min_version; version--) {
-    if (!CBB_add_u16(&versions, ssl->method->version_to_wire(version))) {
-      return 0;
-    }
-  }
-
-  if (!CBB_flush(out)) {
+  if (!ssl_add_supported_versions(hs, &versions) ||
+      !CBB_flush(out)) {
     return 0;
   }
 
@@ -3302,24 +3255,31 @@ int tls1_parse_peer_sigalgs(SSL_HANDSHAKE *hs, const CBS *in_sigalgs) {
   return 1;
 }
 
+int tls1_get_legacy_signature_algorithm(uint16_t *out, const EVP_PKEY *pkey) {
+  switch (EVP_PKEY_id(pkey)) {
+    case EVP_PKEY_RSA:
+      *out = SSL_SIGN_RSA_PKCS1_MD5_SHA1;
+      return 1;
+    case EVP_PKEY_EC:
+      *out = SSL_SIGN_ECDSA_SHA1;
+      return 1;
+    default:
+      return 0;
+  }
+}
+
 int tls1_choose_signature_algorithm(SSL_HANDSHAKE *hs, uint16_t *out) {
   SSL *const ssl = hs->ssl;
   CERT *cert = ssl->cert;
 
   /* Before TLS 1.2, the signature algorithm isn't negotiated as part of the
-   * handshake. It is fixed at MD5-SHA1 for RSA and SHA1 for ECDSA. */
+   * handshake. */
   if (ssl3_protocol_version(ssl) < TLS1_2_VERSION) {
-    int type = ssl_private_key_type(ssl);
-    if (type == NID_rsaEncryption) {
-      *out = SSL_SIGN_RSA_PKCS1_MD5_SHA1;
-      return 1;
+    if (!tls1_get_legacy_signature_algorithm(out, hs->local_pubkey)) {
+      OPENSSL_PUT_ERROR(SSL, SSL_R_NO_COMMON_SIGNATURE_ALGORITHMS);
+      return 0;
     }
-    if (ssl_is_ecdsa_key_type(type)) {
-      *out = SSL_SIGN_ECDSA_SHA1;
-      return 1;
-    }
-    OPENSSL_PUT_ERROR(SSL, SSL_R_NO_COMMON_SIGNATURE_ALGORITHMS);
-    return 0;
+    return 1;
   }
 
   const uint16_t *sigalgs = cert->sigalgs;
@@ -3346,7 +3306,7 @@ int tls1_choose_signature_algorithm(SSL_HANDSHAKE *hs, uint16_t *out) {
     /* SSL_SIGN_RSA_PKCS1_MD5_SHA1 is an internal value and should never be
      * negotiated. */
     if (sigalg == SSL_SIGN_RSA_PKCS1_MD5_SHA1 ||
-        !ssl_private_key_supports_signature_algorithm(ssl, sigalgs[i])) {
+        !ssl_private_key_supports_signature_algorithm(hs, sigalgs[i])) {
       continue;
     }
 

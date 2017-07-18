@@ -146,7 +146,6 @@
 
 #include <openssl/bytestring.h>
 #include <openssl/crypto.h>
-#include <openssl/dh.h>
 #include <openssl/err.h>
 #include <openssl/lhash.h>
 #include <openssl/mem.h>
@@ -296,9 +295,12 @@ SSL_CTX *SSL_CTX_new(const SSL_METHOD *method) {
   ret->mode = SSL_MODE_NO_AUTO_CHAIN;
 
   /* Lock the SSL_CTX to the specified version, for compatibility with legacy
-   * uses of SSL_METHOD. */
+   * uses of SSL_METHOD, but we do not set the minimum version for
+   * |SSLv3_method|. */
   if (!SSL_CTX_set_max_proto_version(ret, method->version) ||
-      !SSL_CTX_set_min_proto_version(ret, method->version)) {
+      !SSL_CTX_set_min_proto_version(ret, method->version == SSL3_VERSION
+                                              ? 0 /* default */
+                                              : method->version)) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_INTERNAL_ERROR);
     goto err2;
   }
@@ -348,6 +350,7 @@ void SSL_CTX_free(SSL_CTX *ctx) {
   OPENSSL_free(ctx->supported_group_list);
   OPENSSL_free(ctx->alpn_client_proto_list);
   EVP_PKEY_free(ctx->tlsext_channel_id_private);
+  OPENSSL_free(ctx->verify_sigalgs);
 
   OPENSSL_free(ctx);
 }
@@ -368,8 +371,8 @@ SSL *SSL_new(SSL_CTX *ctx) {
   }
   OPENSSL_memset(ssl, 0, sizeof(SSL));
 
-  ssl->min_version = ctx->min_version;
-  ssl->max_version = ctx->max_version;
+  ssl->conf_min_version = ctx->conf_min_version;
+  ssl->conf_max_version = ctx->conf_max_version;
 
   /* RFC 6347 states that implementations SHOULD use an initial timer value of
    * 1 second. */
@@ -464,7 +467,10 @@ void SSL_free(SSL *ssl) {
     return;
   }
 
-  ssl->ctx->x509_method->ssl_free(ssl);
+  if (ssl->ctx != NULL) {
+    ssl->ctx->x509_method->ssl_free(ssl);
+  }
+
   CRYPTO_free_ex_data(&g_ex_data_class_ssl, ssl, &ssl->ex_data);
 
   BIO_free_all(ssl->rbio);
@@ -754,19 +760,23 @@ int SSL_write(SSL *ssl, const void *buf, int num) {
     return -1;
   }
 
-  /* If necessary, complete the handshake implicitly. */
-  if (!ssl_can_write(ssl)) {
-    int ret = SSL_do_handshake(ssl);
-    if (ret < 0) {
-      return ret;
+  int ret = 0, needs_handshake = 0;
+  do {
+    /* If necessary, complete the handshake implicitly. */
+    if (!ssl_can_write(ssl)) {
+      ret = SSL_do_handshake(ssl);
+      if (ret < 0) {
+        return ret;
+      }
+      if (ret == 0) {
+        OPENSSL_PUT_ERROR(SSL, SSL_R_SSL_HANDSHAKE_FAILURE);
+        return -1;
+      }
     }
-    if (ret == 0) {
-      OPENSSL_PUT_ERROR(SSL, SSL_R_SSL_HANDSHAKE_FAILURE);
-      return -1;
-    }
-  }
 
-  return ssl->method->write_app_data(ssl, buf, num);
+    ret = ssl->method->write_app_data(ssl, &needs_handshake, buf, num);
+  } while (needs_handshake);
+  return ret;
 }
 
 int SSL_shutdown(SSL *ssl) {
@@ -832,11 +842,40 @@ int SSL_send_fatal_alert(SSL *ssl, uint8_t alert) {
 }
 
 void SSL_CTX_set_early_data_enabled(SSL_CTX *ctx, int enabled) {
-  ctx->enable_early_data = !!enabled;
+  ctx->cert->enable_early_data = !!enabled;
+}
+
+void SSL_set_early_data_enabled(SSL *ssl, int enabled) {
+  ssl->cert->enable_early_data = !!enabled;
+}
+
+int SSL_in_early_data(const SSL *ssl) {
+  if (ssl->s3->hs == NULL) {
+    return 0;
+  }
+  return ssl->s3->hs->in_early_data;
 }
 
 int SSL_early_data_accepted(const SSL *ssl) {
   return ssl->early_data_accepted;
+}
+
+void SSL_reset_early_data_reject(SSL *ssl) {
+  SSL_HANDSHAKE *hs = ssl->s3->hs;
+  if (hs == NULL ||
+      hs->wait != ssl_hs_early_data_rejected) {
+    abort();
+  }
+
+  hs->wait = ssl_hs_ok;
+  hs->in_early_data = 0;
+  SSL_SESSION_free(hs->early_session);
+  hs->early_session = NULL;
+
+  /* Discard any unfinished writes from the perspective of |SSL_write|'s
+   * retry. The handshake will transparently flush out the pending record
+   * (discarded by the server) to keep the framing correct. */
+  ssl->s3->wpend_pending = 0;
 }
 
 static int bio_retry_reason_to_error(int reason) {
@@ -931,59 +970,12 @@ int SSL_get_error(const SSL *ssl, int ret_code) {
 
     case SSL_PENDING_TICKET:
       return SSL_ERROR_PENDING_TICKET;
+
+    case SSL_EARLY_DATA_REJECTED:
+      return SSL_ERROR_EARLY_DATA_REJECTED;
   }
 
   return SSL_ERROR_SYSCALL;
-}
-
-static int set_min_version(const SSL_PROTOCOL_METHOD *method, uint16_t *out,
-                           uint16_t version) {
-  /* Zero is interpreted as the default minimum version. */
-  if (version == 0) {
-    *out = method->min_version;
-    return 1;
-  }
-
-  if (version == TLS1_3_VERSION) {
-    version = TLS1_3_DRAFT_VERSION;
-  }
-
-  return method->version_from_wire(out, version);
-}
-
-static int set_max_version(const SSL_PROTOCOL_METHOD *method, uint16_t *out,
-                           uint16_t version) {
-  /* Zero is interpreted as the default maximum version. */
-  if (version == 0) {
-    *out = method->max_version;
-    /* TODO(svaldez): Enable TLS 1.3 by default once fully implemented. */
-    if (*out > TLS1_2_VERSION) {
-      *out = TLS1_2_VERSION;
-    }
-    return 1;
-  }
-
-  if (version == TLS1_3_VERSION) {
-    version = TLS1_3_DRAFT_VERSION;
-  }
-
-  return method->version_from_wire(out, version);
-}
-
-int SSL_CTX_set_min_proto_version(SSL_CTX *ctx, uint16_t version) {
-  return set_min_version(ctx->method, &ctx->min_version, version);
-}
-
-int SSL_CTX_set_max_proto_version(SSL_CTX *ctx, uint16_t version) {
-  return set_max_version(ctx->method, &ctx->max_version, version);
-}
-
-int SSL_set_min_proto_version(SSL *ssl, uint16_t version) {
-  return set_min_version(ssl->method, &ssl->min_version, version);
-}
-
-int SSL_set_max_proto_version(SSL *ssl, uint16_t version) {
-  return set_max_version(ssl->method, &ssl->max_version, version);
 }
 
 uint32_t SSL_CTX_set_options(SSL_CTX *ctx, uint32_t options) {
@@ -1455,22 +1447,10 @@ uint16_t SSL_get_curve_id(const SSL *ssl) {
 }
 
 int SSL_CTX_set_tmp_dh(SSL_CTX *ctx, const DH *dh) {
-  DH_free(ctx->cert->dh_tmp);
-  ctx->cert->dh_tmp = DHparams_dup(dh);
-  if (ctx->cert->dh_tmp == NULL) {
-    OPENSSL_PUT_ERROR(SSL, ERR_R_DH_LIB);
-    return 0;
-  }
   return 1;
 }
 
 int SSL_set_tmp_dh(SSL *ssl, const DH *dh) {
-  DH_free(ssl->cert->dh_tmp);
-  ssl->cert->dh_tmp = DHparams_dup(dh);
-  if (ssl->cert->dh_tmp == NULL) {
-    OPENSSL_PUT_ERROR(SSL, ERR_R_DH_LIB);
-    return 0;
-  }
   return 1;
 }
 
@@ -1644,32 +1624,31 @@ int SSL_CTX_set_tlsext_servername_arg(SSL_CTX *ctx, void *arg) {
   return 1;
 }
 
-int SSL_select_next_proto(uint8_t **out, uint8_t *out_len,
-                          const uint8_t *server, unsigned server_len,
-                          const uint8_t *client, unsigned client_len) {
-  unsigned int i, j;
+int SSL_select_next_proto(uint8_t **out, uint8_t *out_len, const uint8_t *peer,
+                          unsigned peer_len, const uint8_t *supported,
+                          unsigned supported_len) {
   const uint8_t *result;
-  int status = OPENSSL_NPN_UNSUPPORTED;
+  int status;
 
-  /* For each protocol in server preference order, see if we support it. */
-  for (i = 0; i < server_len;) {
-    for (j = 0; j < client_len;) {
-      if (server[i] == client[j] &&
-          OPENSSL_memcmp(&server[i + 1], &client[j + 1], server[i]) == 0) {
+  /* For each protocol in peer preference order, see if we support it. */
+  for (unsigned i = 0; i < peer_len;) {
+    for (unsigned j = 0; j < supported_len;) {
+      if (peer[i] == supported[j] &&
+          OPENSSL_memcmp(&peer[i + 1], &supported[j + 1], peer[i]) == 0) {
         /* We found a match */
-        result = &server[i];
+        result = &peer[i];
         status = OPENSSL_NPN_NEGOTIATED;
         goto found;
       }
-      j += client[j];
+      j += supported[j];
       j++;
     }
-    i += server[i];
+    i += peer[i];
     i++;
   }
 
-  /* There's no overlap between our protocols and the server's list. */
-  result = client;
+  /* There's no overlap between our protocols and the peer's list. */
+  result = supported;
   status = OPENSSL_NPN_NO_OVERLAP;
 
 found:
@@ -1681,11 +1660,7 @@ found:
 void SSL_get0_next_proto_negotiated(const SSL *ssl, const uint8_t **out_data,
                                     unsigned *out_len) {
   *out_data = ssl->s3->next_proto_negotiated;
-  if (*out_data == NULL) {
-    *out_len = 0;
-  } else {
-    *out_len = ssl->s3->next_proto_negotiated_len;
-  }
+  *out_len = ssl->s3->next_proto_negotiated_len;
 }
 
 void SSL_CTX_set_next_protos_advertised_cb(
@@ -1738,17 +1713,18 @@ void SSL_CTX_set_alpn_select_cb(SSL_CTX *ctx,
 
 void SSL_get0_alpn_selected(const SSL *ssl, const uint8_t **out_data,
                             unsigned *out_len) {
-  *out_data = NULL;
-  if (ssl->s3) {
-    *out_data = ssl->s3->alpn_selected;
-  }
-  if (*out_data == NULL) {
-    *out_len = 0;
+  if (SSL_in_early_data(ssl) && !ssl->server) {
+    *out_data = ssl->s3->hs->early_session->early_alpn;
+    *out_len = ssl->s3->hs->early_session->early_alpn_len;
   } else {
+    *out_data = ssl->s3->alpn_selected;
     *out_len = ssl->s3->alpn_selected_len;
   }
 }
 
+void SSL_CTX_set_allow_unknown_alpn_protos(SSL_CTX *ctx, int enabled) {
+  ctx->allow_unknown_alpn_protos = !!enabled;
+}
 
 void SSL_CTX_set_tls_channel_id_enabled(SSL_CTX *ctx, int enabled) {
   ctx->tlsext_channel_id_enabled = !!enabled;
@@ -1871,43 +1847,6 @@ void ssl_update_cache(SSL_HANDSHAKE *hs, int mode) {
   }
 }
 
-static const char *ssl_get_version(int version) {
-  switch (version) {
-    /* Report TLS 1.3 draft version as TLS 1.3 in the public API. */
-    case TLS1_3_DRAFT_VERSION:
-      return "TLSv1.3";
-
-    case TLS1_2_VERSION:
-      return "TLSv1.2";
-
-    case TLS1_1_VERSION:
-      return "TLSv1.1";
-
-    case TLS1_VERSION:
-      return "TLSv1";
-
-    case SSL3_VERSION:
-      return "SSLv3";
-
-    case DTLS1_VERSION:
-      return "DTLSv1";
-
-    case DTLS1_2_VERSION:
-      return "DTLSv1.2";
-
-    default:
-      return "unknown";
-  }
-}
-
-const char *SSL_get_version(const SSL *ssl) {
-  return ssl_get_version(ssl->version);
-}
-
-const char *SSL_SESSION_get_version(const SSL_SESSION *session) {
-  return ssl_get_version(session->ssl_version);
-}
-
 EVP_PKEY *SSL_get_privatekey(const SSL *ssl) {
   if (ssl->cert != NULL) {
     return ssl->cert->privatekey;
@@ -1932,7 +1871,7 @@ const SSL_CIPHER *SSL_get_current_cipher(const SSL *ssl) {
 }
 
 int SSL_session_reused(const SSL *ssl) {
-  return ssl->s3->session_reused;
+  return ssl->s3->session_reused || SSL_in_early_data(ssl);
 }
 
 const COMP_METHOD *SSL_get_current_compression(SSL *ssl) { return NULL; }
@@ -1983,15 +1922,6 @@ int SSL_get_shutdown(const SSL *ssl) {
     ret |= SSL_SENT_SHUTDOWN;
   }
   return ret;
-}
-
-int SSL_version(const SSL *ssl) {
-  /* Report TLS 1.3 draft version as TLS 1.3 in the public API. */
-  if (ssl->version == TLS1_3_DRAFT_VERSION) {
-    return TLS1_3_VERSION;
-  }
-
-  return ssl->version;
 }
 
 SSL_CTX *SSL_get_SSL_CTX(const SSL *ssl) { return ssl->ctx; }
@@ -2046,10 +1976,10 @@ char *SSL_get_shared_ciphers(const SSL *ssl, char *buf, int len) {
 }
 
 int SSL_get_ex_new_index(long argl, void *argp, CRYPTO_EX_unused *unused,
-                         CRYPTO_EX_dup *dup_func, CRYPTO_EX_free *free_func) {
+                         CRYPTO_EX_dup *dup_unused, CRYPTO_EX_free *free_func) {
   int index;
   if (!CRYPTO_get_ex_new_index(&g_ex_data_class_ssl, &index, argl, argp,
-                               dup_func, free_func)) {
+                               free_func)) {
     return -1;
   }
   return index;
@@ -2064,11 +1994,11 @@ void *SSL_get_ex_data(const SSL *ssl, int idx) {
 }
 
 int SSL_CTX_get_ex_new_index(long argl, void *argp, CRYPTO_EX_unused *unused,
-                             CRYPTO_EX_dup *dup_func,
+                             CRYPTO_EX_dup *dup_unused,
                              CRYPTO_EX_free *free_func) {
   int index;
   if (!CRYPTO_get_ex_new_index(&g_ex_data_class_ssl_ctx, &index, argl, argp,
-                               dup_func, free_func)) {
+                               free_func)) {
     return -1;
   }
   return index;
@@ -2096,60 +2026,42 @@ void SSL_set_tmp_rsa_callback(SSL *ssl, RSA *(*cb)(SSL *ssl, int is_export,
 void SSL_CTX_set_tmp_dh_callback(SSL_CTX *ctx,
                                  DH *(*callback)(SSL *ssl, int is_export,
                                                  int keylength)) {
-  ctx->cert->dh_tmp_cb = callback;
 }
 
 void SSL_set_tmp_dh_callback(SSL *ssl, DH *(*callback)(SSL *ssl, int is_export,
                                                        int keylength)) {
-  ssl->cert->dh_tmp_cb = callback;
 }
 
-int SSL_CTX_use_psk_identity_hint(SSL_CTX *ctx, const char *identity_hint) {
-  if (identity_hint != NULL && strlen(identity_hint) > PSK_MAX_IDENTITY_LEN) {
-    OPENSSL_PUT_ERROR(SSL, SSL_R_DATA_LENGTH_TOO_LONG);
-    return 0;
-  }
-
-  OPENSSL_free(ctx->psk_identity_hint);
-
-  if (identity_hint != NULL) {
-    ctx->psk_identity_hint = BUF_strdup(identity_hint);
-    if (ctx->psk_identity_hint == NULL) {
-      return 0;
-    }
-  } else {
-    ctx->psk_identity_hint = NULL;
-  }
-
-  return 1;
-}
-
-int SSL_use_psk_identity_hint(SSL *ssl, const char *identity_hint) {
-  if (ssl == NULL) {
-    return 0;
-  }
-
+static int use_psk_identity_hint(char **out, const char *identity_hint) {
   if (identity_hint != NULL && strlen(identity_hint) > PSK_MAX_IDENTITY_LEN) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_DATA_LENGTH_TOO_LONG);
     return 0;
   }
 
   /* Clear currently configured hint, if any. */
-  OPENSSL_free(ssl->psk_identity_hint);
-  ssl->psk_identity_hint = NULL;
+  OPENSSL_free(*out);
+  *out = NULL;
 
   /* Treat the empty hint as not supplying one. Plain PSK makes it possible to
    * send either no hint (omit ServerKeyExchange) or an empty hint, while
    * ECDHE_PSK can only spell empty hint. Having different capabilities is odd,
    * so we interpret empty and missing as identical. */
   if (identity_hint != NULL && identity_hint[0] != '\0') {
-    ssl->psk_identity_hint = BUF_strdup(identity_hint);
-    if (ssl->psk_identity_hint == NULL) {
+    *out = BUF_strdup(identity_hint);
+    if (*out == NULL) {
       return 0;
     }
   }
 
   return 1;
+}
+
+int SSL_CTX_use_psk_identity_hint(SSL_CTX *ctx, const char *identity_hint) {
+  return use_psk_identity_hint(&ctx->psk_identity_hint, identity_hint);
+}
+
+int SSL_use_psk_identity_hint(SSL *ssl, const char *identity_hint) {
+  return use_psk_identity_hint(&ssl->psk_identity_hint, identity_hint);
 }
 
 const char *SSL_get_psk_identity_hint(const SSL *ssl) {
@@ -2315,102 +2227,6 @@ int ssl3_can_false_start(const SSL *ssl) {
       cipher != NULL &&
       cipher->algorithm_mkey == SSL_kECDHE &&
       cipher->algorithm_mac == SSL_AEAD;
-}
-
-const struct {
-  uint16_t version;
-  uint32_t flag;
-} kVersions[] = {
-    {SSL3_VERSION, SSL_OP_NO_SSLv3},
-    {TLS1_VERSION, SSL_OP_NO_TLSv1},
-    {TLS1_1_VERSION, SSL_OP_NO_TLSv1_1},
-    {TLS1_2_VERSION, SSL_OP_NO_TLSv1_2},
-    {TLS1_3_VERSION, SSL_OP_NO_TLSv1_3},
-};
-
-static const size_t kVersionsLen = OPENSSL_ARRAY_SIZE(kVersions);
-
-int ssl_get_version_range(const SSL *ssl, uint16_t *out_min_version,
-                          uint16_t *out_max_version) {
-  /* For historical reasons, |SSL_OP_NO_DTLSv1| aliases |SSL_OP_NO_TLSv1|, but
-   * DTLS 1.0 should be mapped to TLS 1.1. */
-  uint32_t options = ssl->options;
-  if (SSL_is_dtls(ssl)) {
-    options &= ~SSL_OP_NO_TLSv1_1;
-    if (options & SSL_OP_NO_DTLSv1) {
-      options |= SSL_OP_NO_TLSv1_1;
-    }
-  }
-
-  uint16_t min_version = ssl->min_version;
-  uint16_t max_version = ssl->max_version;
-
-  /* Bound the range to only those implemented in this protocol. */
-  if (min_version < ssl->method->min_version) {
-    min_version = ssl->method->min_version;
-  }
-  if (max_version > ssl->method->max_version) {
-    max_version = ssl->method->max_version;
-  }
-
-  /* OpenSSL's API for controlling versions entails blacklisting individual
-   * protocols. This has two problems. First, on the client, the protocol can
-   * only express a contiguous range of versions. Second, a library consumer
-   * trying to set a maximum version cannot disable protocol versions that get
-   * added in a future version of the library.
-   *
-   * To account for both of these, OpenSSL interprets the client-side bitmask
-   * as a min/max range by picking the lowest contiguous non-empty range of
-   * enabled protocols. Note that this means it is impossible to set a maximum
-   * version of the higest supported TLS version in a future-proof way. */
-  int any_enabled = 0;
-  for (size_t i = 0; i < kVersionsLen; i++) {
-    /* Only look at the versions already enabled. */
-    if (min_version > kVersions[i].version) {
-      continue;
-    }
-    if (max_version < kVersions[i].version) {
-      break;
-    }
-
-    if (!(options & kVersions[i].flag)) {
-      /* The minimum version is the first enabled version. */
-      if (!any_enabled) {
-        any_enabled = 1;
-        min_version = kVersions[i].version;
-      }
-      continue;
-    }
-
-    /* If there is a disabled version after the first enabled one, all versions
-     * after it are implicitly disabled. */
-    if (any_enabled) {
-      max_version = kVersions[i-1].version;
-      break;
-    }
-  }
-
-  if (!any_enabled) {
-    OPENSSL_PUT_ERROR(SSL, SSL_R_WRONG_SSL_VERSION);
-    return 0;
-  }
-
-  *out_min_version = min_version;
-  *out_max_version = max_version;
-  return 1;
-}
-
-uint16_t ssl3_protocol_version(const SSL *ssl) {
-  assert(ssl->s3->have_version);
-  uint16_t version;
-  if (!ssl->method->version_from_wire(&version, ssl->version)) {
-    /* TODO(davidben): Use the internal version representation for ssl->version
-     * and map to the public API representation at API boundaries. */
-    assert(0);
-    return 0;
-  }
-
-  return version;
 }
 
 int SSL_is_server(const SSL *ssl) { return ssl->server; }
@@ -2706,22 +2522,6 @@ void ssl_get_current_time(const SSL *ssl, struct OPENSSL_timeval *out_clock) {
     out_clock->tv_usec = (uint32_t)clock.tv_usec;
   }
 #endif
-}
-
-int SSL_CTX_set_min_version(SSL_CTX *ctx, uint16_t version) {
-  return SSL_CTX_set_min_proto_version(ctx, version);
-}
-
-int SSL_CTX_set_max_version(SSL_CTX *ctx, uint16_t version) {
-  return SSL_CTX_set_max_proto_version(ctx, version);
-}
-
-int SSL_set_min_version(SSL *ssl, uint16_t version) {
-  return SSL_set_min_proto_version(ssl, version);
-}
-
-int SSL_set_max_version(SSL *ssl, uint16_t version) {
-  return SSL_set_max_proto_version(ssl, version);
 }
 
 void SSL_CTX_set_ticket_aead_method(SSL_CTX *ctx,

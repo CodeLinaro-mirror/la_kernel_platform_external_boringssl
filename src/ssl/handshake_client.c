@@ -156,7 +156,6 @@
 #include <openssl/bn.h>
 #include <openssl/buf.h>
 #include <openssl/bytestring.h>
-#include <openssl/dh.h>
 #include <openssl/ec_key.h>
 #include <openssl/ecdsa.h>
 #include <openssl/err.h>
@@ -170,7 +169,7 @@
 
 
 static int ssl3_send_client_hello(SSL_HANDSHAKE *hs);
-static int dtls1_get_hello_verify(SSL_HANDSHAKE *hs);
+static int dtls1_get_hello_verify_request(SSL_HANDSHAKE *hs);
 static int ssl3_get_server_hello(SSL_HANDSHAKE *hs);
 static int ssl3_get_server_certificate(SSL_HANDSHAKE *hs);
 static int ssl3_get_cert_status(SSL_HANDSHAKE *hs);
@@ -219,8 +218,10 @@ int ssl3_connect(SSL_HANDSHAKE *hs) {
               ret = -1;
               goto end;
             }
+            hs->next_state = SSL3_ST_WRITE_EARLY_DATA;
+          } else {
+            hs->next_state = SSL3_ST_CR_SRVR_HELLO_A;
           }
-          hs->next_state = SSL3_ST_CR_SRVR_HELLO_A;
         } else {
           hs->next_state = DTLS1_ST_CR_HELLO_VERIFY_REQUEST_A;
         }
@@ -229,7 +230,7 @@ int ssl3_connect(SSL_HANDSHAKE *hs) {
 
       case DTLS1_ST_CR_HELLO_VERIFY_REQUEST_A:
         assert(SSL_is_dtls(ssl));
-        ret = dtls1_get_hello_verify(hs);
+        ret = dtls1_get_hello_verify_request(hs);
         if (ret <= 0) {
           goto end;
         }
@@ -240,6 +241,18 @@ int ssl3_connect(SSL_HANDSHAKE *hs) {
           hs->state = SSL3_ST_CR_SRVR_HELLO_A;
         }
         break;
+
+      case SSL3_ST_WRITE_EARLY_DATA:
+        /* Stash the early data session, so connection properties may be queried
+         * out of it. */
+        hs->in_early_data = 1;
+        hs->early_session = ssl->session;
+        SSL_SESSION_up_ref(ssl->session);
+
+        hs->state = SSL3_ST_CR_SRVR_HELLO_A;
+        hs->can_early_write = 1;
+        ret = 1;
+        goto end;
 
       case SSL3_ST_CR_SRVR_HELLO_A:
         ret = ssl3_get_server_hello(hs);
@@ -333,7 +346,6 @@ int ssl3_connect(SSL_HANDSHAKE *hs) {
         break;
 
       case SSL3_ST_CW_CERT_VRFY_A:
-      case SSL3_ST_CW_CERT_VRFY_B:
         if (hs->cert_request && ssl_has_certificate(ssl)) {
           ret = ssl3_send_cert_verify(hs);
           if (ret <= 0) {
@@ -545,42 +557,8 @@ uint16_t ssl_get_grease_value(const SSL *ssl, enum ssl_grease_index_t index) {
  * disabled algorithms. */
 static void ssl_get_client_disabled(SSL *ssl, uint32_t *out_mask_a,
                                     uint32_t *out_mask_k) {
-  int have_rsa = 0, have_ecdsa = 0;
   *out_mask_a = 0;
   *out_mask_k = 0;
-
-  /* Now go through all signature algorithms seeing if we support any for RSA or
-   * ECDSA. Do this for all versions not just TLS 1.2. */
-  const uint16_t *sigalgs;
-  size_t num_sigalgs = tls12_get_verify_sigalgs(ssl, &sigalgs);
-  for (size_t i = 0; i < num_sigalgs; i++) {
-    switch (sigalgs[i]) {
-      case SSL_SIGN_RSA_PSS_SHA512:
-      case SSL_SIGN_RSA_PSS_SHA384:
-      case SSL_SIGN_RSA_PSS_SHA256:
-      case SSL_SIGN_RSA_PKCS1_SHA512:
-      case SSL_SIGN_RSA_PKCS1_SHA384:
-      case SSL_SIGN_RSA_PKCS1_SHA256:
-      case SSL_SIGN_RSA_PKCS1_SHA1:
-        have_rsa = 1;
-        break;
-
-      case SSL_SIGN_ECDSA_SECP521R1_SHA512:
-      case SSL_SIGN_ECDSA_SECP384R1_SHA384:
-      case SSL_SIGN_ECDSA_SECP256R1_SHA256:
-      case SSL_SIGN_ECDSA_SHA1:
-        have_ecdsa = 1;
-        break;
-    }
-  }
-
-  /* Disable auth if we don't include any appropriate signature algorithms. */
-  if (!have_rsa) {
-    *out_mask_a |= SSL_aRSA;
-  }
-  if (!have_ecdsa) {
-    *out_mask_a |= SSL_aECDSA;
-  }
 
   /* PSK requires a client callback. */
   if (ssl->psk_client_callback == NULL) {
@@ -589,9 +567,8 @@ static void ssl_get_client_disabled(SSL *ssl, uint32_t *out_mask_a,
   }
 }
 
-static int ssl_write_client_cipher_list(SSL *ssl, CBB *out,
-                                        uint16_t min_version,
-                                        uint16_t max_version) {
+static int ssl_write_client_cipher_list(SSL_HANDSHAKE *hs, CBB *out) {
+  SSL *const ssl = hs->ssl;
   uint32_t mask_a, mask_k;
   ssl_get_client_disabled(ssl, &mask_a, &mask_k);
 
@@ -608,7 +585,7 @@ static int ssl_write_client_cipher_list(SSL *ssl, CBB *out,
 
   /* Add TLS 1.3 ciphers. Order ChaCha20-Poly1305 relative to AES-GCM based on
    * hardware support. */
-  if (max_version >= TLS1_3_VERSION) {
+  if (hs->max_version >= TLS1_3_VERSION) {
     if (!EVP_has_aes_hardware() &&
         !CBB_add_u16(&child, TLS1_CK_CHACHA20_POLY1305_SHA256 & 0xffff)) {
       return 0;
@@ -623,7 +600,7 @@ static int ssl_write_client_cipher_list(SSL *ssl, CBB *out,
     }
   }
 
-  if (min_version < TLS1_3_VERSION) {
+  if (hs->min_version < TLS1_3_VERSION) {
     STACK_OF(SSL_CIPHER) *ciphers = SSL_get_ciphers(ssl);
     int any_enabled = 0;
     for (size_t i = 0; i < sk_SSL_CIPHER_num(ciphers); i++) {
@@ -633,8 +610,8 @@ static int ssl_write_client_cipher_list(SSL *ssl, CBB *out,
           (cipher->algorithm_auth & mask_a)) {
         continue;
       }
-      if (SSL_CIPHER_get_min_version(cipher) > max_version ||
-          SSL_CIPHER_get_max_version(cipher) < min_version) {
+      if (SSL_CIPHER_get_min_version(cipher) > hs->max_version ||
+          SSL_CIPHER_get_max_version(cipher) < hs->min_version) {
         continue;
       }
       any_enabled = 1;
@@ -644,7 +621,7 @@ static int ssl_write_client_cipher_list(SSL *ssl, CBB *out,
     }
 
     /* If all ciphers were disabled, return the error to the caller. */
-    if (!any_enabled && max_version < TLS1_3_VERSION) {
+    if (!any_enabled && hs->max_version < TLS1_3_VERSION) {
       OPENSSL_PUT_ERROR(SSL, SSL_R_NO_CIPHERS_AVAILABLE);
       return 0;
     }
@@ -652,7 +629,7 @@ static int ssl_write_client_cipher_list(SSL *ssl, CBB *out,
 
   /* For SSLv3, the SCSV is added. Otherwise the renegotiation extension is
    * added. */
-  if (max_version == SSL3_VERSION &&
+  if (hs->max_version == SSL3_VERSION &&
       !ssl->s3->initial_handshake_complete) {
     if (!CBB_add_u16(&child, SSL3_CK_SCSV & 0xffff)) {
       return 0;
@@ -670,11 +647,6 @@ static int ssl_write_client_cipher_list(SSL *ssl, CBB *out,
 
 int ssl_write_client_hello(SSL_HANDSHAKE *hs) {
   SSL *const ssl = hs->ssl;
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
-    return 0;
-  }
-
   CBB cbb, body;
   if (!ssl->method->init_message(ssl, &cbb, &body, SSL3_MT_CLIENT_HELLO)) {
     goto err;
@@ -703,7 +675,7 @@ int ssl_write_client_hello(SSL_HANDSHAKE *hs) {
 
   size_t header_len =
       SSL_is_dtls(ssl) ? DTLS1_HM_HEADER_LENGTH : SSL3_HM_HEADER_LENGTH;
-  if (!ssl_write_client_cipher_list(ssl, &body, min_version, max_version) ||
+  if (!ssl_write_client_cipher_list(hs, &body) ||
       !CBB_add_u8(&body, 1 /* one compression method */) ||
       !CBB_add_u8(&body, 0 /* null compression */) ||
       !ssl_add_clienthello_tlsext(hs, &body, header_len + CBB_len(&body))) {
@@ -740,37 +712,31 @@ static int ssl3_send_client_hello(SSL_HANDSHAKE *hs) {
     return -1;
   }
 
-  uint16_t min_version, max_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version)) {
+  /* Freeze the version range. */
+  if (!ssl_get_version_range(ssl, &hs->min_version, &hs->max_version)) {
     return -1;
-  }
-
-  uint16_t max_wire_version = ssl->method->version_to_wire(max_version);
-  assert(hs->state == SSL3_ST_CW_CLNT_HELLO_A);
-  if (!ssl->s3->have_version) {
-    ssl->version = max_wire_version;
   }
 
   /* Always advertise the ClientHello version from the original maximum version,
    * even on renegotiation. The static RSA key exchange uses this field, and
    * some servers fail when it changes across handshakes. */
-  hs->client_version = max_wire_version;
-  if (max_version >= TLS1_3_VERSION) {
-    hs->client_version = ssl->method->version_to_wire(TLS1_2_VERSION);
+  if (SSL_is_dtls(hs->ssl)) {
+    hs->client_version =
+        hs->max_version >= TLS1_2_VERSION ? DTLS1_2_VERSION : DTLS1_VERSION;
+  } else {
+    hs->client_version =
+        hs->max_version >= TLS1_2_VERSION ? TLS1_2_VERSION : hs->max_version;
   }
 
   /* If the configured session has expired or was created at a disabled
    * version, drop it. */
   if (ssl->session != NULL) {
-    uint16_t session_version;
     if (ssl->session->is_server ||
-        !ssl->method->version_from_wire(&session_version,
-                                        ssl->session->ssl_version) ||
-        (session_version < TLS1_3_VERSION &&
-         ssl->session->session_id_length == 0) ||
+        !ssl_supports_version(hs, ssl->session->ssl_version) ||
+        (ssl->session->session_id_length == 0 &&
+         ssl->session->tlsext_ticklen == 0) ||
         ssl->session->not_resumable ||
-        !ssl_session_is_time_valid(ssl, ssl->session) ||
-        session_version < min_version || session_version > max_version) {
+        !ssl_session_is_time_valid(ssl, ssl->session)) {
       ssl_set_session(ssl, NULL);
     }
   }
@@ -789,9 +755,8 @@ static int ssl3_send_client_hello(SSL_HANDSHAKE *hs) {
   return 1;
 }
 
-static int dtls1_get_hello_verify(SSL_HANDSHAKE *hs) {
+static int dtls1_get_hello_verify_request(SSL_HANDSHAKE *hs) {
   SSL *const ssl = hs->ssl;
-  int al;
   CBS hello_verify_request, cookie;
   uint16_t server_version;
 
@@ -809,15 +774,11 @@ static int dtls1_get_hello_verify(SSL_HANDSHAKE *hs) {
   CBS_init(&hello_verify_request, ssl->init_msg, ssl->init_num);
   if (!CBS_get_u16(&hello_verify_request, &server_version) ||
       !CBS_get_u8_length_prefixed(&hello_verify_request, &cookie) ||
+      CBS_len(&cookie) > sizeof(ssl->d1->cookie) ||
       CBS_len(&hello_verify_request) != 0) {
-    al = SSL_AD_DECODE_ERROR;
     OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-    goto f_err;
-  }
-
-  if (CBS_len(&cookie) > sizeof(ssl->d1->cookie)) {
-    al = SSL_AD_ILLEGAL_PARAMETER;
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+    return -1;
   }
 
   OPENSSL_memcpy(ssl->d1->cookie, CBS_data(&cookie), CBS_len(&cookie));
@@ -825,17 +786,12 @@ static int dtls1_get_hello_verify(SSL_HANDSHAKE *hs) {
 
   ssl->d1->send_cookie = 1;
   return 1;
-
-f_err:
-  ssl3_send_alert(ssl, SSL3_AL_FATAL, al);
-  return -1;
 }
 
 static int ssl3_get_server_hello(SSL_HANDSHAKE *hs) {
   SSL *const ssl = hs->ssl;
-  int al = SSL_AD_INTERNAL_ERROR;
   CBS server_hello, server_random, session_id;
-  uint16_t server_wire_version, cipher_suite;
+  uint16_t server_version, cipher_suite;
   uint8_t compression_method;
 
   int ret = ssl->method->ssl_get_message(ssl);
@@ -863,31 +819,28 @@ static int ssl3_get_server_hello(SSL_HANDSHAKE *hs) {
 
   CBS_init(&server_hello, ssl->init_msg, ssl->init_num);
 
-  if (!CBS_get_u16(&server_hello, &server_wire_version)) {
-    al = SSL_AD_DECODE_ERROR;
+  if (!CBS_get_u16(&server_hello, &server_version)) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+    return -1;
   }
 
-  uint16_t min_version, max_version, server_version;
-  if (!ssl_get_version_range(ssl, &min_version, &max_version) ||
-      !ssl->method->version_from_wire(&server_version, server_wire_version) ||
-      server_version < min_version || server_version > max_version) {
+  if (!ssl_supports_version(hs, server_version)) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_UNSUPPORTED_PROTOCOL);
-    al = SSL_AD_PROTOCOL_VERSION;
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_PROTOCOL_VERSION);
+    return -1;
   }
 
   assert(ssl->s3->have_version == ssl->s3->initial_handshake_complete);
   if (!ssl->s3->have_version) {
-    ssl->version = server_wire_version;
+    ssl->version = server_version;
     /* At this point, the connection's version is known and ssl->version is
      * fixed. Begin enforcing the record-layer version. */
     ssl->s3->have_version = 1;
-  } else if (server_wire_version != ssl->version) {
+  } else if (server_version != ssl->version) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_WRONG_SSL_VERSION);
-    al = SSL_AD_PROTOCOL_VERSION;
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_PROTOCOL_VERSION);
+    return -1;
   }
 
   if (ssl3_protocol_version(ssl) >= TLS1_3_VERSION) {
@@ -898,8 +851,8 @@ static int ssl3_get_server_hello(SSL_HANDSHAKE *hs) {
 
   if (hs->early_data_offered) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_WRONG_VERSION_ON_EARLY_DATA);
-    al = SSL_AD_PROTOCOL_VERSION;
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_PROTOCOL_VERSION);
+    return -1;
   }
 
   ssl_clear_tls13_state(hs);
@@ -913,13 +866,14 @@ static int ssl3_get_server_hello(SSL_HANDSHAKE *hs) {
       CBS_len(&session_id) > SSL3_SESSION_ID_SIZE ||
       !CBS_get_u16(&server_hello, &cipher_suite) ||
       !CBS_get_u8(&server_hello, &compression_method)) {
-    al = SSL_AD_DECODE_ERROR;
     OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+    return -1;
   }
 
   /* Copy over the server random. */
-  OPENSSL_memcpy(ssl->s3->server_random, CBS_data(&server_random), SSL3_RANDOM_SIZE);
+  OPENSSL_memcpy(ssl->s3->server_random, CBS_data(&server_random),
+                 SSL3_RANDOM_SIZE);
 
   /* TODO(davidben): Implement the TLS 1.1 and 1.2 downgrade sentinels once TLS
    * 1.3 is finalized and we are not implementing a draft version. */
@@ -934,7 +888,8 @@ static int ssl3_get_server_hello(SSL_HANDSHAKE *hs) {
      * fill out. */
     ssl_set_session(ssl, NULL);
     if (!ssl_get_new_session(hs, 0 /* client */)) {
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_INTERNAL_ERROR);
+      return -1;
     }
     /* Note: session_id could be empty. */
     hs->new_session->session_id_length = CBS_len(&session_id);
@@ -945,9 +900,9 @@ static int ssl3_get_server_hello(SSL_HANDSHAKE *hs) {
   const SSL_CIPHER *c = SSL_get_cipher_by_value(cipher_suite);
   if (c == NULL) {
     /* unknown cipher */
-    al = SSL_AD_ILLEGAL_PARAMETER;
     OPENSSL_PUT_ERROR(SSL, SSL_R_UNKNOWN_CIPHER_RETURNED);
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
+    return -1;
   }
 
   /* The cipher must be allowed in the selected version and enabled. */
@@ -957,28 +912,28 @@ static int ssl3_get_server_hello(SSL_HANDSHAKE *hs) {
       SSL_CIPHER_get_min_version(c) > ssl3_protocol_version(ssl) ||
       SSL_CIPHER_get_max_version(c) < ssl3_protocol_version(ssl) ||
       !sk_SSL_CIPHER_find(SSL_get_ciphers(ssl), NULL, c)) {
-    al = SSL_AD_ILLEGAL_PARAMETER;
     OPENSSL_PUT_ERROR(SSL, SSL_R_WRONG_CIPHER_RETURNED);
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
+    return -1;
   }
 
   if (ssl->session != NULL) {
     if (ssl->session->ssl_version != ssl->version) {
-      al = SSL_AD_ILLEGAL_PARAMETER;
       OPENSSL_PUT_ERROR(SSL, SSL_R_OLD_SESSION_VERSION_NOT_RETURNED);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
+      return -1;
     }
     if (ssl->session->cipher != c) {
-      al = SSL_AD_ILLEGAL_PARAMETER;
       OPENSSL_PUT_ERROR(SSL, SSL_R_OLD_SESSION_CIPHER_NOT_RETURNED);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
+      return -1;
     }
     if (!ssl_session_is_context_valid(ssl, ssl->session)) {
       /* This is actually a client application bug. */
-      al = SSL_AD_ILLEGAL_PARAMETER;
       OPENSSL_PUT_ERROR(SSL,
                         SSL_R_ATTEMPT_TO_REUSE_SESSION_IN_DIFFERENT_CONTEXT);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
+      return -1;
     }
   } else {
     hs->new_session->cipher = c;
@@ -990,7 +945,8 @@ static int ssl3_get_server_hello(SSL_HANDSHAKE *hs) {
   if (!SSL_TRANSCRIPT_init_hash(&hs->transcript, ssl3_protocol_version(ssl),
                                 c->algorithm_prf) ||
       !ssl_hash_current_message(hs)) {
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_INTERNAL_ERROR);
+    return -1;
   }
 
   /* If doing a full handshake, the server may request a client certificate
@@ -1003,42 +959,37 @@ static int ssl3_get_server_hello(SSL_HANDSHAKE *hs) {
 
   /* Only the NULL compression algorithm is supported. */
   if (compression_method != 0) {
-    al = SSL_AD_ILLEGAL_PARAMETER;
     OPENSSL_PUT_ERROR(SSL, SSL_R_UNSUPPORTED_COMPRESSION_ALGORITHM);
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
+    return -1;
   }
 
   /* TLS extensions */
   if (!ssl_parse_serverhello_tlsext(hs, &server_hello)) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_PARSE_TLSEXT);
-    goto err;
+    return -1;
   }
 
   /* There should be nothing left over in the record. */
   if (CBS_len(&server_hello) != 0) {
     /* wrong packet length */
-    al = SSL_AD_DECODE_ERROR;
     OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+    return -1;
   }
 
   if (ssl->session != NULL &&
       hs->extended_master_secret != ssl->session->extended_master_secret) {
-    al = SSL_AD_HANDSHAKE_FAILURE;
     if (ssl->session->extended_master_secret) {
       OPENSSL_PUT_ERROR(SSL, SSL_R_RESUMED_EMS_SESSION_WITHOUT_EMS_EXTENSION);
     } else {
       OPENSSL_PUT_ERROR(SSL, SSL_R_RESUMED_NON_EMS_SESSION_WITH_EMS_EXTENSION);
     }
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_HANDSHAKE_FAILURE);
+    return -1;
   }
 
   return 1;
-
-f_err:
-  ssl3_send_alert(ssl, SSL3_AL_FATAL, al);
-err:
-  return -1;
 }
 
 static int ssl3_get_server_certificate(SSL_HANDSHAKE *hs) {
@@ -1114,10 +1065,6 @@ static int ssl3_get_server_certificate(SSL_HANDSHAKE *hs) {
 
 static int ssl3_get_cert_status(SSL_HANDSHAKE *hs) {
   SSL *const ssl = hs->ssl;
-  int al;
-  CBS certificate_status, ocsp_response;
-  uint8_t status_type;
-
   int ret = ssl->method->ssl_get_message(ssl);
   if (ret <= 0) {
     return ret;
@@ -1134,28 +1081,27 @@ static int ssl3_get_cert_status(SSL_HANDSHAKE *hs) {
     return -1;
   }
 
+  CBS certificate_status, ocsp_response;
+  uint8_t status_type;
   CBS_init(&certificate_status, ssl->init_msg, ssl->init_num);
   if (!CBS_get_u8(&certificate_status, &status_type) ||
       status_type != TLSEXT_STATUSTYPE_ocsp ||
       !CBS_get_u24_length_prefixed(&certificate_status, &ocsp_response) ||
       CBS_len(&ocsp_response) == 0 ||
       CBS_len(&certificate_status) != 0) {
-    al = SSL_AD_DECODE_ERROR;
     OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+    return -1;
   }
 
   if (!CBS_stow(&ocsp_response, &hs->new_session->ocsp_response,
                 &hs->new_session->ocsp_response_length)) {
-    al = SSL_AD_INTERNAL_ERROR;
     OPENSSL_PUT_ERROR(SSL, ERR_R_MALLOC_FAILURE);
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_INTERNAL_ERROR);
+    return -1;
   }
-  return 1;
 
-f_err:
-  ssl3_send_alert(ssl, SSL3_AL_FATAL, al);
-  return -1;
+  return 1;
 }
 
 static int ssl3_verify_server_cert(SSL_HANDSHAKE *hs) {
@@ -1169,8 +1115,6 @@ static int ssl3_verify_server_cert(SSL_HANDSHAKE *hs) {
 
 static int ssl3_get_server_key_exchange(SSL_HANDSHAKE *hs) {
   SSL *const ssl = hs->ssl;
-  int al;
-  DH *dh = NULL;
   EC_KEY *ecdh = NULL;
   EC_POINT *srvr_ecpoint = NULL;
 
@@ -1209,9 +1153,9 @@ static int ssl3_get_server_key_exchange(SSL_HANDSHAKE *hs) {
     /* Each of the PSK key exchanges begins with a psk_identity_hint. */
     if (!CBS_get_u16_length_prefixed(&server_key_exchange,
                                      &psk_identity_hint)) {
-      al = SSL_AD_DECODE_ERROR;
       OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+      goto err;
     }
 
     /* Store PSK identity hint for later use, hint is used in
@@ -1223,9 +1167,9 @@ static int ssl3_get_server_key_exchange(SSL_HANDSHAKE *hs) {
      * a specific identity. */
     if (CBS_len(&psk_identity_hint) > PSK_MAX_IDENTITY_LEN ||
         CBS_contains_zero_byte(&psk_identity_hint)) {
-      al = SSL_AD_HANDSHAKE_FAILURE;
       OPENSSL_PUT_ERROR(SSL, SSL_R_DATA_LENGTH_TOO_LONG);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_HANDSHAKE_FAILURE);
+      goto err;
     }
 
     /* Save non-empty identity hints as a C string. Empty identity hints we
@@ -1235,56 +1179,13 @@ static int ssl3_get_server_key_exchange(SSL_HANDSHAKE *hs) {
      * and missing as identical. */
     if (CBS_len(&psk_identity_hint) != 0 &&
         !CBS_strdup(&psk_identity_hint, &hs->peer_psk_identity_hint)) {
-      al = SSL_AD_INTERNAL_ERROR;
       OPENSSL_PUT_ERROR(SSL, ERR_R_MALLOC_FAILURE);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_INTERNAL_ERROR);
+      goto err;
     }
   }
 
-  if (alg_k & SSL_kDHE) {
-    CBS dh_p, dh_g, dh_Ys;
-    if (!CBS_get_u16_length_prefixed(&server_key_exchange, &dh_p) ||
-        CBS_len(&dh_p) == 0 ||
-        !CBS_get_u16_length_prefixed(&server_key_exchange, &dh_g) ||
-        CBS_len(&dh_g) == 0 ||
-        !CBS_get_u16_length_prefixed(&server_key_exchange, &dh_Ys) ||
-        CBS_len(&dh_Ys) == 0) {
-      al = SSL_AD_DECODE_ERROR;
-      OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-      goto f_err;
-    }
-
-    dh = DH_new();
-    if (dh == NULL) {
-      goto err;
-    }
-
-    dh->p = BN_bin2bn(CBS_data(&dh_p), CBS_len(&dh_p), NULL);
-    dh->g = BN_bin2bn(CBS_data(&dh_g), CBS_len(&dh_g), NULL);
-    if (dh->p == NULL || dh->g == NULL) {
-      goto err;
-    }
-
-    unsigned bits = DH_num_bits(dh);
-    if (bits < 1024) {
-      OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_DH_P_LENGTH);
-      goto err;
-    } else if (bits > 4096) {
-      /* Overly large DHE groups are prohibitively expensive, so enforce a limit
-       * to prevent a server from causing us to perform too expensive of a
-       * computation. */
-      OPENSSL_PUT_ERROR(SSL, SSL_R_DH_P_TOO_LONG);
-      goto err;
-    }
-
-    SSL_ECDH_CTX_init_for_dhe(&hs->ecdh_ctx, dh);
-    dh = NULL;
-
-    /* Save the peer public key for later. */
-    if (!CBS_stow(&dh_Ys, &hs->peer_key, &hs->peer_key_len)) {
-      goto err;
-    }
-  } else if (alg_k & SSL_kECDHE) {
+  if (alg_k & SSL_kECDHE) {
     /* Parse the server parameters. */
     uint8_t group_type;
     uint16_t group_id;
@@ -1293,17 +1194,17 @@ static int ssl3_get_server_key_exchange(SSL_HANDSHAKE *hs) {
         group_type != NAMED_CURVE_TYPE ||
         !CBS_get_u16(&server_key_exchange, &group_id) ||
         !CBS_get_u8_length_prefixed(&server_key_exchange, &point)) {
-      al = SSL_AD_DECODE_ERROR;
       OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+      goto err;
     }
     hs->new_session->group_id = group_id;
 
     /* Ensure the group is consistent with preferences. */
     if (!tls1_check_group_id(ssl, group_id)) {
-      al = SSL_AD_ILLEGAL_PARAMETER;
       OPENSSL_PUT_ERROR(SSL, SSL_R_WRONG_CURVE);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_ILLEGAL_PARAMETER);
+      goto err;
     }
 
     /* Initialize ECDH and save the peer public key for later. */
@@ -1312,9 +1213,9 @@ static int ssl3_get_server_key_exchange(SSL_HANDSHAKE *hs) {
       goto err;
     }
   } else if (!(alg_k & SSL_kPSK)) {
-    al = SSL_AD_UNEXPECTED_MESSAGE;
     OPENSSL_PUT_ERROR(SSL, SSL_R_UNEXPECTED_MESSAGE);
-    goto f_err;
+    ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_UNEXPECTED_MESSAGE);
+    goto err;
   }
 
   /* At this point, |server_key_exchange| contains the signature, if any, while
@@ -1329,31 +1230,30 @@ static int ssl3_get_server_key_exchange(SSL_HANDSHAKE *hs) {
     uint16_t signature_algorithm = 0;
     if (ssl3_protocol_version(ssl) >= TLS1_2_VERSION) {
       if (!CBS_get_u16(&server_key_exchange, &signature_algorithm)) {
-        al = SSL_AD_DECODE_ERROR;
         OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-        goto f_err;
+        ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+        goto err;
       }
-      if (!tls12_check_peer_sigalg(ssl, &al, signature_algorithm)) {
-        goto f_err;
+      uint8_t alert = SSL_AD_DECODE_ERROR;
+      if (!tls12_check_peer_sigalg(ssl, &alert, signature_algorithm)) {
+        ssl3_send_alert(ssl, SSL3_AL_FATAL, alert);
+        goto err;
       }
       hs->new_session->peer_signature_algorithm = signature_algorithm;
-    } else if (hs->peer_pubkey->type == EVP_PKEY_RSA) {
-      signature_algorithm = SSL_SIGN_RSA_PKCS1_MD5_SHA1;
-    } else if (hs->peer_pubkey->type == EVP_PKEY_EC) {
-      signature_algorithm = SSL_SIGN_ECDSA_SHA1;
-    } else {
-      al = SSL_AD_UNSUPPORTED_CERTIFICATE;
+    } else if (!tls1_get_legacy_signature_algorithm(&signature_algorithm,
+                                                    hs->peer_pubkey)) {
       OPENSSL_PUT_ERROR(SSL, SSL_R_PEER_ERROR_UNSUPPORTED_CERTIFICATE_TYPE);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_UNSUPPORTED_CERTIFICATE);
+      goto err;
     }
 
     /* The last field in |server_key_exchange| is the signature. */
     CBS signature;
     if (!CBS_get_u16_length_prefixed(&server_key_exchange, &signature) ||
         CBS_len(&server_key_exchange) != 0) {
-      al = SSL_AD_DECODE_ERROR;
       OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+      goto err;
     }
 
     CBB transcript;
@@ -1365,9 +1265,9 @@ static int ssl3_get_server_key_exchange(SSL_HANDSHAKE *hs) {
         !CBB_add_bytes(&transcript, CBS_data(&parameter), CBS_len(&parameter)) ||
         !CBB_finish(&transcript, &transcript_data, &transcript_len)) {
       CBB_cleanup(&transcript);
-      al = SSL_AD_INTERNAL_ERROR;
       OPENSSL_PUT_ERROR(SSL, ERR_R_INTERNAL_ERROR);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_INTERNAL_ERROR);
+      goto err;
     }
 
     int sig_ok = ssl_public_key_verify(
@@ -1381,26 +1281,23 @@ static int ssl3_get_server_key_exchange(SSL_HANDSHAKE *hs) {
 #endif
     if (!sig_ok) {
       /* bad signature */
-      al = SSL_AD_DECRYPT_ERROR;
       OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_SIGNATURE);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECRYPT_ERROR);
+      goto err;
     }
   } else {
     /* PSK ciphers are the only supported certificate-less ciphers. */
     assert(alg_a == SSL_aPSK);
 
     if (CBS_len(&server_key_exchange) > 0) {
-      al = SSL_AD_DECODE_ERROR;
       OPENSSL_PUT_ERROR(SSL, SSL_R_EXTRA_DATA_IN_MESSAGE);
-      goto f_err;
+      ssl3_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
+      goto err;
     }
   }
   return 1;
 
-f_err:
-  ssl3_send_alert(ssl, SSL3_AL_FATAL, al);
 err:
-  DH_free(dh);
   EC_POINT_free(srvr_ecpoint);
   EC_KEY_free(ecdh);
   return -1;
@@ -1527,7 +1424,7 @@ static int ssl3_send_client_certificate(SSL_HANDSHAKE *hs) {
     }
   }
 
-  if (!ssl->ctx->x509_method->ssl_auto_chain_if_needed(ssl) ||
+  if (!ssl_on_certificate_selected(hs) ||
       !ssl3_output_cert_chain(ssl)) {
     return -1;
   }
@@ -1627,10 +1524,10 @@ static int ssl3_send_client_key_exchange(SSL_HANDSHAKE *hs) {
         !CBB_flush(&body)) {
       goto err;
     }
-  } else if (alg_k & (SSL_kECDHE|SSL_kDHE)) {
+  } else if (alg_k & SSL_kECDHE) {
     /* Generate a keypair and serialize the public half. */
     CBB child;
-    if (!SSL_ECDH_CTX_add_key(&hs->ecdh_ctx, &body, &child)) {
+    if (!CBB_add_u8_length_prefixed(&body, &child)) {
       goto err;
     }
 
@@ -1739,7 +1636,7 @@ static int ssl3_send_cert_verify(SSL_HANDSHAKE *hs) {
   }
 
   /* Set aside space for the signature. */
-  const size_t max_sig_len = ssl_private_key_max_signature_len(ssl);
+  const size_t max_sig_len = EVP_PKEY_size(hs->local_pubkey);
   uint8_t *ptr;
   if (!CBB_add_u16_length_prefixed(&body, &child) ||
       !CBB_reserve(&child, &ptr, max_sig_len)) {
@@ -1747,58 +1644,43 @@ static int ssl3_send_cert_verify(SSL_HANDSHAKE *hs) {
   }
 
   size_t sig_len = max_sig_len;
-  enum ssl_private_key_result_t sign_result;
-  if (hs->state == SSL3_ST_CW_CERT_VRFY_A) {
-    /* The SSL3 construction for CertificateVerify does not decompose into a
-     * single final digest and signature, and must be special-cased. */
-    if (ssl3_protocol_version(ssl) == SSL3_VERSION) {
-      if (ssl->cert->key_method != NULL) {
-        OPENSSL_PUT_ERROR(SSL, SSL_R_UNSUPPORTED_PROTOCOL_FOR_CUSTOM_KEY);
-        goto err;
-      }
-
-      uint8_t digest[EVP_MAX_MD_SIZE];
-      size_t digest_len;
-      if (!SSL_TRANSCRIPT_ssl3_cert_verify_hash(&hs->transcript, digest,
-                                                &digest_len, hs->new_session,
-                                                signature_algorithm)) {
-        goto err;
-      }
-
-      sign_result = ssl_private_key_success;
-
-      EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new(ssl->cert->privatekey, NULL);
-      if (pctx == NULL ||
-          !EVP_PKEY_sign_init(pctx) ||
-          !EVP_PKEY_sign(pctx, ptr, &sig_len, digest, digest_len)) {
-        EVP_PKEY_CTX_free(pctx);
-        sign_result = ssl_private_key_failure;
-        goto err;
-      }
-      EVP_PKEY_CTX_free(pctx);
-    } else {
-      sign_result = ssl_private_key_sign(
-          ssl, ptr, &sig_len, max_sig_len, signature_algorithm,
-          (const uint8_t *)hs->transcript.buffer->data,
-          hs->transcript.buffer->length);
+  /* The SSL3 construction for CertificateVerify does not decompose into a
+   * single final digest and signature, and must be special-cased. */
+  if (ssl3_protocol_version(ssl) == SSL3_VERSION) {
+    if (ssl->cert->key_method != NULL) {
+      OPENSSL_PUT_ERROR(SSL, SSL_R_UNSUPPORTED_PROTOCOL_FOR_CUSTOM_KEY);
+      goto err;
     }
 
-    /* The handshake buffer is no longer necessary. */
-    SSL_TRANSCRIPT_free_buffer(&hs->transcript);
-  } else {
-    assert(hs->state == SSL3_ST_CW_CERT_VRFY_B);
-    sign_result = ssl_private_key_complete(ssl, ptr, &sig_len, max_sig_len);
-  }
+    uint8_t digest[EVP_MAX_MD_SIZE];
+    size_t digest_len;
+    if (!SSL_TRANSCRIPT_ssl3_cert_verify_hash(&hs->transcript, digest,
+                                              &digest_len, hs->new_session,
+                                              signature_algorithm)) {
+      goto err;
+    }
 
-  switch (sign_result) {
-    case ssl_private_key_success:
-      break;
-    case ssl_private_key_failure:
+    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new(ssl->cert->privatekey, NULL);
+    int ok = pctx != NULL &&
+             EVP_PKEY_sign_init(pctx) &&
+             EVP_PKEY_sign(pctx, ptr, &sig_len, digest, digest_len);
+    EVP_PKEY_CTX_free(pctx);
+    if (!ok) {
       goto err;
-    case ssl_private_key_retry:
-      ssl->rwstate = SSL_PRIVATE_KEY_OPERATION;
-      hs->state = SSL3_ST_CW_CERT_VRFY_B;
-      goto err;
+    }
+  } else {
+    switch (ssl_private_key_sign(hs, ptr, &sig_len, max_sig_len,
+                                 signature_algorithm,
+                                 (const uint8_t *)hs->transcript.buffer->data,
+                                 hs->transcript.buffer->length)) {
+      case ssl_private_key_success:
+        break;
+      case ssl_private_key_failure:
+        goto err;
+      case ssl_private_key_retry:
+        ssl->rwstate = SSL_PRIVATE_KEY_OPERATION;
+        goto err;
+    }
   }
 
   if (!CBB_did_write(&child, sig_len) ||
@@ -1806,6 +1688,8 @@ static int ssl3_send_cert_verify(SSL_HANDSHAKE *hs) {
     goto err;
   }
 
+  /* The handshake buffer is no longer necessary. */
+  SSL_TRANSCRIPT_free_buffer(&hs->transcript);
   return 1;
 
 err:
