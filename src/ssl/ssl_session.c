@@ -467,8 +467,12 @@ SSL_SESSION *SSL_get_session(const SSL *ssl) {
   if (!SSL_in_init(ssl)) {
     return ssl->s3->established_session;
   }
-  if (ssl->s3->hs->new_session != NULL) {
-    return ssl->s3->hs->new_session;
+  SSL_HANDSHAKE *hs = ssl->s3->hs;
+  if (hs->early_session != NULL) {
+    return hs->early_session;
+  }
+  if (hs->new_session != NULL) {
+    return hs->new_session;
   }
   return ssl->session;
 }
@@ -483,10 +487,10 @@ SSL_SESSION *SSL_get1_session(SSL *ssl) {
 
 int SSL_SESSION_get_ex_new_index(long argl, void *argp,
                                  CRYPTO_EX_unused *unused,
-                                 CRYPTO_EX_dup *dup_func,
+                                 CRYPTO_EX_dup *dup_unused,
                                  CRYPTO_EX_free *free_func) {
   int index;
-  if (!CRYPTO_get_ex_new_index(&g_ex_data_class, &index, argl, argp, dup_func,
+  if (!CRYPTO_get_ex_new_index(&g_ex_data_class, &index, argl, argp,
                                free_func)) {
     return -1;
   }
@@ -501,14 +505,21 @@ void *SSL_SESSION_get_ex_data(const SSL_SESSION *session, int idx) {
   return CRYPTO_get_ex_data(&session->ex_data, idx);
 }
 
-const EVP_MD *SSL_SESSION_get_digest(const SSL_SESSION *session,
-                                     const SSL *ssl) {
-  uint16_t version;
-  if (!ssl->method->version_from_wire(&version, session->ssl_version)) {
-    return NULL;
+uint16_t SSL_SESSION_protocol_version(const SSL_SESSION *session) {
+  uint16_t ret;
+  if (!ssl_protocol_version_from_wire(&ret, session->ssl_version)) {
+    /* An |SSL_SESSION| will never have an invalid version. This is enforced by
+     * the parser. */
+    assert(0);
+    return 0;
   }
 
-  return ssl_get_handshake_digest(session->cipher->algorithm_prf, version);
+  return ret;
+}
+
+const EVP_MD *SSL_SESSION_get_digest(const SSL_SESSION *session) {
+  return ssl_get_handshake_digest(session->cipher->algorithm_prf,
+                                  SSL_SESSION_protocol_version(session));
 }
 
 int ssl_get_new_session(SSL_HANDSHAKE *hs, int is_server) {
@@ -948,7 +959,6 @@ static int remove_session_lock(SSL_CTX *ctx, SSL_SESSION *session, int lock) {
     }
 
     if (ret) {
-      found_session->not_resumable = 1;
       if (ctx->remove_session_cb != NULL) {
         ctx->remove_session_cb(ctx, found_session);
       }
@@ -1027,7 +1037,6 @@ static void timeout_doall_arg(SSL_SESSION *session, void *void_param) {
      * save on locking overhead */
     (void) lh_SSL_SESSION_delete(param->cache, session);
     SSL_SESSION_list_remove(param->ctx, session);
-    session->not_resumable = 1;
     if (param->ctx->remove_session_cb != NULL) {
       param->ctx->remove_session_cb(param->ctx, session);
     }

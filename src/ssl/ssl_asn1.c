@@ -121,9 +121,6 @@
  *                                  -- stapled OCSP response from the server
  *     extendedMasterSecret    [17] BOOLEAN OPTIONAL,
  *     groupID                 [18] INTEGER OPTIONAL,
- *                                  -- For historical reasons, for legacy DHE or
- *                                  -- static RSA ciphers, this field contains
- *                                  -- another value to be discarded.
  *     certChain               [19] SEQUENCE OF Certificate OPTIONAL,
  *     ticketAgeAdd            [21] OCTET STRING OPTIONAL,
  *     isServer                [22] BOOLEAN DEFAULT TRUE,
@@ -579,10 +576,17 @@ SSL_SESSION *SSL_SESSION_parse(CBS *cbs, const SSL_X509_METHOD *x509_method,
 
   CBS session;
   uint64_t version, ssl_version;
+  uint16_t unused;
   if (!CBS_get_asn1(cbs, &session, CBS_ASN1_SEQUENCE) ||
       !CBS_get_asn1_uint64(&session, &version) ||
       version != kVersion ||
-      !CBS_get_asn1_uint64(&session, &ssl_version)) {
+      !CBS_get_asn1_uint64(&session, &ssl_version) ||
+      /* Require sessions have versions valid in either TLS or DTLS. The session
+       * will not be used by the handshake if not applicable, but, for
+       * simplicity, never parse a session that does not pass
+       * |ssl_protocol_version_from_wire|. */
+      ssl_version > UINT16_MAX ||
+      !ssl_protocol_version_from_wire(&unused, ssl_version)) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_INVALID_SSL_SESSION);
     goto err;
   }
@@ -692,23 +696,10 @@ SSL_SESSION *SSL_SESSION_parse(CBS *cbs, const SSL_X509_METHOD *x509_method,
   }
   ret->extended_master_secret = !!extended_master_secret;
 
-  uint32_t value;
-  if (!SSL_SESSION_parse_u32(&session, &value, kGroupIDTag, 0)) {
+  if (!SSL_SESSION_parse_u16(&session, &ret->group_id, kGroupIDTag, 0)) {
     OPENSSL_PUT_ERROR(SSL, SSL_R_INVALID_SSL_SESSION);
     goto err;
   }
-
-  /* Historically, the group_id field was used for key-exchange-specific
-   * information. Discard all but the group ID. */
-  if (ret->cipher->algorithm_mkey & (SSL_kRSA | SSL_kDHE)) {
-    value = 0;
-  }
-
-  if (value > 0xffff) {
-    OPENSSL_PUT_ERROR(SSL, SSL_R_INVALID_SSL_SESSION);
-    goto err;
-  }
-  ret->group_id = (uint16_t)value;
 
   CBS cert_chain;
   CBS_init(&cert_chain, NULL, 0);

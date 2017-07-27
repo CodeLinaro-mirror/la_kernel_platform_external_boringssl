@@ -26,8 +26,26 @@ const (
 	VersionTLS13 = 0x0304
 )
 
+const (
+	VersionDTLS10 = 0xfeff
+	VersionDTLS12 = 0xfefd
+)
+
 // A draft version of TLS 1.3 that is sent over the wire for the current draft.
 const tls13DraftVersion = 0x7f12
+
+var allTLSWireVersions = []uint16{
+	tls13DraftVersion,
+	VersionTLS12,
+	VersionTLS11,
+	VersionTLS10,
+	VersionSSL30,
+}
+
+var allDTLSWireVersions = []uint16{
+	VersionDTLS12,
+	VersionDTLS10,
+}
 
 const (
 	maxPlaintext        = 16384        // maximum plaintext payload length
@@ -184,6 +202,7 @@ var supportedSignatureAlgorithms = []signatureAlgorithm{
 	signatureECDSAWithP256AndSHA256,
 	signatureRSAPKCS1WithSHA1,
 	signatureECDSAWithSHA1,
+	signatureEd25519,
 }
 
 // SRTP protection profiles (See RFC 5764, section 4.1.2)
@@ -624,12 +643,12 @@ type ProtocolBugs struct {
 	SendSupportedVersions []uint16
 
 	// NegotiateVersion, if non-zero, causes the server to negotiate the
-	// specifed TLS version rather than the version supported by either
+	// specifed wire version rather than the version supported by either
 	// peer.
 	NegotiateVersion uint16
 
 	// NegotiateVersionOnRenego, if non-zero, causes the server to negotiate
-	// the specified TLS version on renegotiation rather than retaining it.
+	// the specified wire version on renegotiation rather than retaining it.
 	NegotiateVersionOnRenego uint16
 
 	// ExpectFalseStart causes the server to, on full handshakes,
@@ -709,8 +728,12 @@ type ProtocolBugs struct {
 	EmptyRenegotiationInfo bool
 
 	// BadRenegotiationInfo causes the renegotiation extension value in a
-	// renegotiation handshake to be incorrect.
+	// renegotiation handshake to be incorrect at the start.
 	BadRenegotiationInfo bool
+
+	// BadRenegotiationInfoEnd causes the renegotiation extension value in
+	// a renegotiation handshake to be incorrect at the end.
+	BadRenegotiationInfoEnd bool
 
 	// NoRenegotiationInfo disables renegotiation info support in all
 	// handshakes.
@@ -878,10 +901,6 @@ type ProtocolBugs struct {
 	// BadFinished, if true, causes the Finished hash to be broken.
 	BadFinished bool
 
-	// DHGroupPrime, if not nil, is used to define the (finite field)
-	// Diffie-Hellman group. The generator used is always two.
-	DHGroupPrime *big.Int
-
 	// PackHandshakeFragments, if true, causes handshake fragments in DTLS
 	// to be packed into individual handshake records, up to the specified
 	// record size.
@@ -1003,11 +1022,6 @@ type ProtocolBugs struct {
 	// HelloRequest handshake message to be sent before each handshake
 	// message. This only makes sense for a server.
 	SendHelloRequestBeforeEveryHandshakeMessage bool
-
-	// RequireDHPublicValueLen causes a fatal error if the length (in
-	// bytes) of the server's Diffie-Hellman public value is not equal to
-	// this.
-	RequireDHPublicValueLen int
 
 	// BadChangeCipherSpec, if not nil, is the body to be sent in
 	// ChangeCipherSpec records instead of {1}.
@@ -1183,6 +1197,14 @@ type ProtocolBugs struct {
 	// the number of records or their content do not match.
 	ExpectEarlyData [][]byte
 
+	// ExpectLateEarlyData causes a TLS 1.3 server to read application
+	// data after the ServerFinished (assuming the server is able to
+	// derive the key under which the data is encrypted) before it
+	// sends the ClientFinished. It checks that the application data it
+	// reads matches what is provided in ExpectLateEarlyData and errors if
+	// the number of records or their content do not match.
+	ExpectLateEarlyData [][]byte
+
 	// SendHalfRTTData causes a TLS 1.3 server to send the provided
 	// data in application data records before reading the client's
 	// Finished message.
@@ -1257,6 +1279,10 @@ type ProtocolBugs struct {
 	// send in the ClientHello.
 	SendCompressionMethods []byte
 
+	// SendCompressionMethod is the compression method to send in the
+	// ServerHello.
+	SendCompressionMethod byte
+
 	// AlwaysSendPreSharedKeyIdentityHint, if true, causes the server to
 	// always send a ServerKeyExchange for PSK ciphers, even if the identity
 	// hint is empty.
@@ -1325,6 +1351,19 @@ type ProtocolBugs struct {
 	// RenegotiationCertificate, if not nil, is the certificate to use on
 	// renegotiation handshakes.
 	RenegotiationCertificate *Certificate
+
+	// UseLegacySigningAlgorithm, if non-zero, is the signature algorithm
+	// to use when signing in TLS 1.1 and earlier where algorithms are not
+	// negotiated.
+	UseLegacySigningAlgorithm signatureAlgorithm
+
+	// SendServerHelloAsHelloRetryRequest, if true, causes the server to
+	// send ServerHello messages with a HelloRetryRequest type field.
+	SendServerHelloAsHelloRetryRequest bool
+
+	// RejectUnsolicitedKeyUpdate, if true, causes all unsolicited
+	// KeyUpdates from the peer to be rejected.
+	RejectUnsolicitedKeyUpdate bool
 }
 
 func (c *Config) serverInit() {
@@ -1425,10 +1464,29 @@ func (c *Config) defaultCurves() map[CurveID]bool {
 	return defaultCurves
 }
 
-// isSupportedVersion returns true if the specified protocol version is
-// acceptable.
-func (c *Config) isSupportedVersion(vers uint16, isDTLS bool) bool {
-	return c.minVersion(isDTLS) <= vers && vers <= c.maxVersion(isDTLS)
+// isSupportedVersion checks if the specified wire version is acceptable. If so,
+// it returns true and the corresponding protocol version. Otherwise, it returns
+// false.
+func (c *Config) isSupportedVersion(wireVers uint16, isDTLS bool) (uint16, bool) {
+	vers, ok := wireToVersion(wireVers, isDTLS)
+	if !ok || c.minVersion(isDTLS) > vers || vers > c.maxVersion(isDTLS) {
+		return 0, false
+	}
+	return vers, true
+}
+
+func (c *Config) supportedVersions(isDTLS bool) []uint16 {
+	versions := allTLSWireVersions
+	if isDTLS {
+		versions = allDTLSWireVersions
+	}
+	var ret []uint16
+	for _, vers := range versions {
+		if _, ok := c.isSupportedVersion(vers, isDTLS); ok {
+			ret = append(ret, vers)
+		}
+	}
+	return ret
 }
 
 // getCertificateForName returns the best certificate for the given name,
@@ -1704,3 +1762,12 @@ var (
 	downgradeTLS13 = []byte{0x44, 0x4f, 0x57, 0x4e, 0x47, 0x52, 0x44, 0x01}
 	downgradeTLS12 = []byte{0x44, 0x4f, 0x57, 0x4e, 0x47, 0x52, 0x44, 0x00}
 )
+
+func containsGREASE(values []uint16) bool {
+	for _, v := range values {
+		if isGREASEValue(v) {
+			return true
+		}
+	}
+	return false
+}
