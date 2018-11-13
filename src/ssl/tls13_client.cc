@@ -24,13 +24,14 @@
 #include <openssl/digest.h>
 #include <openssl/err.h>
 #include <openssl/mem.h>
+#include <openssl/sha.h>
 #include <openssl/stack.h>
 
 #include "../crypto/internal.h"
 #include "internal.h"
 
 
-namespace bssl {
+BSSL_NAMESPACE_BEGIN
 
 enum client_hs_state_t {
   state_read_hello_retry_request = 0,
@@ -40,6 +41,7 @@ enum client_hs_state_t {
   state_read_certificate_request,
   state_read_server_certificate,
   state_read_server_certificate_verify,
+  state_server_certificate_reverify,
   state_read_server_finished,
   state_send_end_of_early_data,
   state_send_client_certificate,
@@ -464,6 +466,10 @@ static enum ssl_hs_wait_t do_read_certificate_request(SSL_HANDSHAKE *hs) {
   SSL *const ssl = hs->ssl;
   // CertificateRequest may only be sent in non-resumption handshakes.
   if (ssl->s3->session_reused) {
+    if (ssl->ctx->reverify_on_resume) {
+      hs->tls13_state = state_server_certificate_reverify;
+      return ssl_hs_ok;
+    }
     hs->tls13_state = state_read_server_finished;
     return ssl_hs_ok;
   }
@@ -547,7 +553,7 @@ static enum ssl_hs_wait_t do_read_server_certificate(SSL_HANDSHAKE *hs) {
     return ssl_hs_error;
   }
 
-  if (!tls13_process_certificate(hs, msg, 0 /* certificate required */) ||
+  if (!tls13_process_certificate(hs, msg, false /* certificate required */) ||
       !ssl_hash_message(hs, msg)) {
     return ssl_hs_error;
   }
@@ -585,6 +591,21 @@ static enum ssl_hs_wait_t do_read_server_certificate_verify(
   return ssl_hs_ok;
 }
 
+static enum ssl_hs_wait_t do_server_certificate_reverify(
+    SSL_HANDSHAKE *hs) {
+  switch (ssl_reverify_peer_cert(hs)) {
+    case ssl_verify_ok:
+      break;
+    case ssl_verify_invalid:
+      return ssl_hs_error;
+    case ssl_verify_retry:
+      hs->tls13_state = state_server_certificate_reverify;
+      return ssl_hs_certificate_verify;
+  }
+  hs->tls13_state = state_read_server_finished;
+  return ssl_hs_ok;
+}
+
 static enum ssl_hs_wait_t do_read_server_finished(SSL_HANDSHAKE *hs) {
   SSL *const ssl = hs->ssl;
   SSLMessage msg;
@@ -592,7 +613,7 @@ static enum ssl_hs_wait_t do_read_server_finished(SSL_HANDSHAKE *hs) {
     return ssl_hs_read_message;
   }
   if (!ssl_check_message_type(ssl, msg, SSL3_MT_FINISHED) ||
-      !tls13_process_finished(hs, msg, 0 /* don't use saved value */) ||
+      !tls13_process_finished(hs, msg, false /* don't use saved value */) ||
       !ssl_hash_message(hs, msg) ||
       // Update the secret to the master secret and derive traffic keys.
       !tls13_advance_key_schedule(hs, kZeroes, hs->hash_len) ||
@@ -754,6 +775,9 @@ enum ssl_hs_wait_t tls13_client_handshake(SSL_HANDSHAKE *hs) {
       case state_read_server_certificate_verify:
         ret = do_read_server_certificate_verify(hs);
         break;
+      case state_server_certificate_reverify:
+        ret = do_server_certificate_reverify(hs);
+        break;
       case state_read_server_finished:
         ret = do_read_server_finished(hs);
         break;
@@ -804,6 +828,8 @@ const char *tls13_client_handshake_state(SSL_HANDSHAKE *hs) {
       return "TLS 1.3 client read_server_certificate";
     case state_read_server_certificate_verify:
       return "TLS 1.3 client read_server_certificate_verify";
+    case state_server_certificate_reverify:
+      return "TLS 1.3 client server_certificate_reverify";
     case state_read_server_finished:
       return "TLS 1.3 client read_server_finished";
     case state_send_end_of_early_data:
@@ -821,18 +847,18 @@ const char *tls13_client_handshake_state(SSL_HANDSHAKE *hs) {
   return "TLS 1.3 client unknown";
 }
 
-int tls13_process_new_session_ticket(SSL *ssl, const SSLMessage &msg) {
+bool tls13_process_new_session_ticket(SSL *ssl, const SSLMessage &msg) {
   if (ssl->s3->write_shutdown != ssl_shutdown_none) {
     // Ignore tickets on shutdown. Callers tend to indiscriminately call
     // |SSL_shutdown| before destroying an |SSL|, at which point calling the new
     // session callback may be confusing.
-    return 1;
+    return true;
   }
 
   UniquePtr<SSL_SESSION> session = SSL_SESSION_dup(
       ssl->s3->established_session.get(), SSL_SESSION_INCLUDE_NONAUTH);
   if (!session) {
-    return 0;
+    return false;
   }
 
   ssl_session_rebase_time(ssl, session.get());
@@ -848,7 +874,7 @@ int tls13_process_new_session_ticket(SSL *ssl, const SSLMessage &msg) {
       CBS_len(&body) != 0) {
     ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
     OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-    return 0;
+    return false;
   }
 
   // Cap the renewable lifetime by the server advertised value. This avoids
@@ -858,7 +884,7 @@ int tls13_process_new_session_ticket(SSL *ssl, const SSLMessage &msg) {
   }
 
   if (!tls13_derive_session_psk(session.get(), ticket_nonce)) {
-    return 0;
+    return false;
   }
 
   // Parse out the extensions.
@@ -873,7 +899,7 @@ int tls13_process_new_session_ticket(SSL *ssl, const SSLMessage &msg) {
                             OPENSSL_ARRAY_SIZE(ext_types),
                             1 /* ignore unknown */)) {
     ssl_send_alert(ssl, SSL3_AL_FATAL, alert);
-    return 0;
+    return false;
   }
 
   if (have_early_data_info && ssl->enable_early_data) {
@@ -881,9 +907,14 @@ int tls13_process_new_session_ticket(SSL *ssl, const SSLMessage &msg) {
         CBS_len(&early_data_info) != 0) {
       ssl_send_alert(ssl, SSL3_AL_FATAL, SSL_AD_DECODE_ERROR);
       OPENSSL_PUT_ERROR(SSL, SSL_R_DECODE_ERROR);
-      return 0;
+      return false;
     }
   }
+
+  // Generate a session ID for this session. Some callers expect all sessions to
+  // have a session ID.
+  SHA256(CBS_data(&ticket), CBS_len(&ticket), session->session_id);
+  session->session_id_length = SHA256_DIGEST_LENGTH;
 
   session->ticket_age_add_valid = true;
   session->not_resumable = false;
@@ -895,7 +926,7 @@ int tls13_process_new_session_ticket(SSL *ssl, const SSLMessage &msg) {
     session.release();
   }
 
-  return 1;
+  return true;
 }
 
-}  // namespace bssl
+BSSL_NAMESPACE_END

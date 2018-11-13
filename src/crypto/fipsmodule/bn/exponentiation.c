@@ -446,21 +446,18 @@ static int BN_window_bits_for_exponent_size(int b) {
 
 static int mod_exp_recp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
                         const BIGNUM *m, BN_CTX *ctx) {
-  int i, j, bits, ret = 0, wstart, window;
+  int i, j, ret = 0, wstart, window;
   int start = 1;
   BIGNUM *aa;
   // Table of variables obtained from 'ctx'
   BIGNUM *val[TABLE_SIZE];
   BN_RECP_CTX recp;
 
-  bits = BN_num_bits(p);
+  // This function is only called on even moduli.
+  assert(!BN_is_odd(m));
 
+  int bits = BN_num_bits(p);
   if (bits == 0) {
-    // x**0 mod 1 is still zero.
-    if (BN_is_one(m)) {
-      BN_zero(r);
-      return 1;
-    }
     return BN_one(r);
   }
 
@@ -586,6 +583,10 @@ err:
 
 int BN_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, const BIGNUM *m,
                BN_CTX *ctx) {
+  if (m->neg) {
+    OPENSSL_PUT_ERROR(BN, BN_R_NEGATIVE_NUMBER);
+    return 0;
+  }
   if (a->neg || BN_ucmp(a, m) >= 0) {
     if (!BN_nnmod(r, a, m, ctx)) {
       return 0;
@@ -606,6 +607,10 @@ int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
     OPENSSL_PUT_ERROR(BN, BN_R_CALLED_WITH_EVEN_MODULUS);
     return 0;
   }
+  if (m->neg) {
+    OPENSSL_PUT_ERROR(BN, BN_R_NEGATIVE_NUMBER);
+    return 0;
+  }
   if (a->neg || BN_ucmp(a, m) >= 0) {
     OPENSSL_PUT_ERROR(BN, BN_R_INPUT_NOT_REDUCED);
     return 0;
@@ -614,7 +619,7 @@ int BN_mod_exp_mont(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
   int bits = BN_num_bits(p);
   if (bits == 0) {
     // x**0 mod 1 is still zero.
-    if (BN_is_one(m)) {
+    if (BN_abs_is_word(m, 1)) {
       BN_zero(rr);
       return 1;
     }
@@ -970,6 +975,10 @@ int BN_mod_exp_mont_consttime(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
     OPENSSL_PUT_ERROR(BN, BN_R_CALLED_WITH_EVEN_MODULUS);
     return 0;
   }
+  if (m->neg) {
+    OPENSSL_PUT_ERROR(BN, BN_R_NEGATIVE_NUMBER);
+    return 0;
+  }
   if (a->neg || BN_ucmp(a, m) >= 0) {
     OPENSSL_PUT_ERROR(BN, BN_R_INPUT_NOT_REDUCED);
     return 0;
@@ -981,7 +990,7 @@ int BN_mod_exp_mont_consttime(BIGNUM *rr, const BIGNUM *a, const BIGNUM *p,
   int bits = max_bits;
   if (bits == 0) {
     // x**0 mod 1 is still zero.
-    if (BN_is_one(m)) {
+    if (BN_abs_is_word(m, 1)) {
       BN_zero(rr);
       return 1;
     }

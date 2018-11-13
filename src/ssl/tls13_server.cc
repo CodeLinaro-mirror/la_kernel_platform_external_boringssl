@@ -36,7 +36,7 @@
 #include "internal.h"
 
 
-namespace bssl {
+BSSL_NAMESPACE_BEGIN
 
 enum server_hs_state_t {
   state_select_parameters = 0,
@@ -313,8 +313,7 @@ static enum ssl_ticket_aead_result_t select_session(
   bool unused_renew;
   UniquePtr<SSL_SESSION> session;
   enum ssl_ticket_aead_result_t ret =
-      ssl_process_ticket(hs, &session, &unused_renew, CBS_data(&ticket),
-                         CBS_len(&ticket), NULL, 0);
+      ssl_process_ticket(hs, &session, &unused_renew, ticket, {});
   switch (ret) {
     case ssl_ticket_aead_success:
       break;
@@ -707,7 +706,7 @@ static enum ssl_hs_wait_t do_send_server_finished(SSL_HANDSHAKE *hs) {
     // If accepting 0-RTT, we send tickets half-RTT. This gets the tickets on
     // the wire sooner and also avoids triggering a write on |SSL_read| when
     // processing the client Finished. This requires computing the client
-    // Finished early. See draft-ietf-tls-tls13-18, section 4.5.1.
+    // Finished early. See RFC 8446, section 4.6.1.
     static const uint8_t kEndOfEarlyData[4] = {SSL3_MT_END_OF_EARLY_DATA, 0,
                                                0, 0};
     if (!hs->transcript.Update(kEndOfEarlyData)) {
@@ -717,7 +716,7 @@ static enum ssl_hs_wait_t do_send_server_finished(SSL_HANDSHAKE *hs) {
 
     size_t finished_len;
     if (!tls13_finished_mac(hs, hs->expected_client_finished, &finished_len,
-                            0 /* client */)) {
+                            false /* client */)) {
       return ssl_hs_error;
     }
 
@@ -808,7 +807,7 @@ static enum ssl_hs_wait_t do_read_client_certificate(SSL_HANDSHAKE *hs) {
     return ssl_hs_ok;
   }
 
-  const int allow_anonymous =
+  const bool allow_anonymous =
       (hs->config->verify_mode & SSL_VERIFY_FAIL_IF_NO_PEER_CERT) == 0;
   SSLMessage msg;
   if (!ssl->method->get_message(ssl, &msg)) {
@@ -1029,4 +1028,4 @@ const char *tls13_server_handshake_state(SSL_HANDSHAKE *hs) {
   return "TLS 1.3 server unknown";
 }
 
-}  // namespace bssl
+BSSL_NAMESPACE_END
