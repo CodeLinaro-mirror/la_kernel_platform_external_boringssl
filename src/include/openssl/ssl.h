@@ -2177,6 +2177,7 @@ OPENSSL_EXPORT int SSL_set1_curves_list(SSL *ssl, const char *curves);
 #define SSL_CURVE_SECP384R1 24
 #define SSL_CURVE_SECP521R1 25
 #define SSL_CURVE_X25519 29
+#define SSL_CURVE_CECPQ2 16696
 
 // SSL_get_curve_id returns the ID of the curve used by |ssl|'s most recently
 // completed handshake or 0 if not applicable.
@@ -3047,7 +3048,10 @@ OPENSSL_EXPORT void SSL_get_peer_quic_transport_params(const SSL *ssl,
 // |SSL_QUIC_METHOD| to configure secrets and send data. If data is needed from
 // the peer, it will return |SSL_ERROR_WANT_READ|. When received, the caller
 // should call |SSL_provide_quic_data| and then |SSL_do_handshake| to continue
-// the handshake. It is an error to call |SSL_read| and |SSL_write| in QUIC.
+// the handshake. After the handshake is complete, the caller should call
+// |SSL_provide_quic_data| for any post-handshake data, followed by
+// |SSL_process_quic_post_handshake| to process it. It is an error to call
+// |SSL_read| and |SSL_write| in QUIC.
 //
 // Note that secrets for an encryption level may be available to QUIC before the
 // level is active in TLS. Callers should use |SSL_quic_read_level| to determine
@@ -3064,8 +3068,7 @@ OPENSSL_EXPORT void SSL_get_peer_quic_transport_params(const SSL *ssl,
 // |SSL_quic_max_handshake_flight_len| to get the maximum buffer length at each
 // encryption level.
 //
-// Note: 0-RTT and post-handshake tickets are not currently supported via this
-// API.
+// Note: 0-RTT is not currently supported via this API.
 
 // ssl_encryption_level_t represents a specific QUIC encryption level used to
 // transmit handshake messages.
@@ -3138,6 +3141,11 @@ OPENSSL_EXPORT int SSL_provide_quic_data(SSL *ssl,
                                          enum ssl_encryption_level_t level,
                                          const uint8_t *data, size_t len);
 
+
+// SSL_process_quic_post_handshake processes any data that QUIC has provided
+// after the handshake has completed. This includes NewSessionTicket messages
+// sent by the server. It returns one on success and zero on error.
+OPENSSL_EXPORT int SSL_process_quic_post_handshake(SSL *ssl);
 
 // SSL_CTX_set_quic_method configures the QUIC hooks. This should only be
 // configured with a minimum version of TLS 1.3. |quic_method| must remain valid
@@ -3784,6 +3792,14 @@ OPENSSL_EXPORT void SSL_set_ignore_tls13_downgrade(SSL *ssl, int ignore);
 // SSL_is_tls13_downgrade returns one if the TLS 1.3 anti-downgrade
 // mechanism would have aborted |ssl|'s handshake and zero otherwise.
 OPENSSL_EXPORT int SSL_is_tls13_downgrade(const SSL *ssl);
+
+// SSL_set_jdk11_workaround configures whether to workaround a bug in JDK 11's
+// TLS 1.3 implementation. Prior to 11.0.2, JDK 11 fails to send SNI in
+// connections which offer a TLS 1.3 session. Enabling this workaround will
+// disable TLS 1.3 on such clients.
+//
+// See also https://bugs.openjdk.java.net/browse/JDK-8211806.
+OPENSSL_EXPORT void SSL_set_jdk11_workaround(SSL *ssl, int enable);
 
 
 // Deprecated functions.
@@ -4699,6 +4715,14 @@ OPENSSL_EXPORT bool SSL_decline_handoff(SSL *ssl);
 OPENSSL_EXPORT bool SSL_apply_handoff(SSL *ssl, Span<const uint8_t> handoff);
 OPENSSL_EXPORT bool SSL_serialize_handback(const SSL *ssl, CBB *out);
 OPENSSL_EXPORT bool SSL_apply_handback(SSL *ssl, Span<const uint8_t> handback);
+
+// SSL_get_traffic_secrets sets |*out_read_traffic_secret| and
+// |*out_write_traffic_secret| to reference the TLS 1.3 traffic secrets for
+// |ssl|. This function is only valid on TLS 1.3 connections that have
+// completed the handshake. It returns true on success and false on error.
+OPENSSL_EXPORT bool SSL_get_traffic_secrets(
+    const SSL *ssl, Span<const uint8_t> *out_read_traffic_secret,
+    Span<const uint8_t> *out_write_traffic_secret);
 
 BSSL_NAMESPACE_END
 
