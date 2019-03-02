@@ -53,6 +53,9 @@ endif()
 
 if(BORINGSSL_PREFIX AND BORINGSSL_PREFIX_SYMBOLS)
   add_definitions(-DBORINGSSL_PREFIX=${BORINGSSL_PREFIX})
+  # CMake automatically connects include_directories to the NASM command-line,
+  # but not add_definitions.
+  set(CMAKE_ASM_NASM_FLAGS "${CMAKE_ASM_NASM_FLAGS} -DBORINGSSL_PREFIX=${BORINGSSL_PREFIX}")
 
   # Use "symbol_prefix_include" to store generated header files
   include_directories(${CMAKE_CURRENT_BINARY_DIR}/symbol_prefix_include)
@@ -407,6 +410,9 @@ elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "i686")
 elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "aarch64")
   set(ARCH "aarch64")
 elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "arm64")
+  set(ARCH "aarch64")
+# Apple A12 Bionic chipset which is added in iPhone XS/XS Max/XR uses arm64e architecture.
+elseif(${CMAKE_SYSTEM_PROCESSOR} STREQUAL "arm64e")
   set(ARCH "aarch64")
 elseif(${CMAKE_SYSTEM_PROCESSOR} MATCHES "^arm*")
   set(ARCH "arm")
