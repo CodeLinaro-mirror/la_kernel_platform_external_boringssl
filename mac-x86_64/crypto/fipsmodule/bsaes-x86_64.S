@@ -14,11 +14,9 @@
 .text	
 
 
-
-
-
 .p2align	6
 _bsaes_encrypt8:
+
 	leaq	L$BS0(%rip),%r11
 
 	movdqa	(%rax),%xmm8
@@ -489,8 +487,10 @@ L$enc_done:
 
 
 
+
 .p2align	6
 _bsaes_decrypt8:
+
 	leaq	L$BS0(%rip),%r11
 
 	movdqa	(%rax),%xmm8
@@ -994,8 +994,10 @@ L$dec_done:
 	.byte	0xf3,0xc3
 
 
+
 .p2align	4
 _bsaes_key_convert:
+
 	leaq	L$masks(%rip),%r11
 	movdqu	(%rcx),%xmm7
 	leaq	16(%rcx),%rcx
@@ -1082,10 +1084,8 @@ L$key_loop:
 .p2align	4
 _bsaes_cbc_encrypt:
 
-	cmpl	$0,%r9d
-	jne	_aes_nohw_cbc_encrypt
-	cmpq	$128,%rdx
-	jb	_aes_nohw_cbc_encrypt
+
+
 
 	movq	%rsp,%rax
 L$cbc_dec_prologue:
@@ -1128,6 +1128,8 @@ L$cbc_dec_prologue:
 
 	movdqu	(%rbx),%xmm14
 	subq	$8,%r14
+	jc	L$cbc_dec_loop_done
+
 L$cbc_dec_loop:
 	movdqu	0(%r12),%xmm15
 	movdqu	16(%r12),%xmm0
@@ -1172,6 +1174,7 @@ L$cbc_dec_loop:
 	subq	$8,%r14
 	jnc	L$cbc_dec_loop
 
+L$cbc_dec_loop_done:
 	addq	$8,%r14
 	jz	L$cbc_dec_done
 
@@ -1304,13 +1307,12 @@ L$cbc_dec_two:
 	jmp	L$cbc_dec_done
 .p2align	4
 L$cbc_dec_one:
-	leaq	(%r12),%rdi
-	leaq	32(%rbp),%rsi
-	leaq	(%r15),%rdx
-	call	_aes_nohw_decrypt
-	pxor	32(%rbp),%xmm14
-	movdqu	%xmm14,(%r13)
-	movdqa	%xmm15,%xmm14
+	movdqa	%xmm14,32(%rbp)
+	call	_bsaes_decrypt8
+	pxor	32(%rbp),%xmm15
+	movdqu	0(%r12),%xmm14
+	movdqu	%xmm15,0(%r13)
+	jmp	L$cbc_dec_done
 
 L$cbc_dec_done:
 	movdqu	%xmm14,(%rbx)
@@ -1350,6 +1352,12 @@ L$cbc_dec_epilogue:
 .p2align	4
 _bsaes_ctr32_encrypt_blocks:
 
+#ifndef NDEBUG
+#ifndef BORINGSSL_FIPS
+
+	movb	$1,_BORINGSSL_function_hit+6(%rip)
+#endif
+#endif
 	movq	%rsp,%rax
 L$ctr_enc_prologue:
 	pushq	%rbp
@@ -1375,8 +1383,8 @@ L$ctr_enc_prologue:
 	movq	%rdx,%r14
 	movq	%rcx,%r15
 	movdqa	%xmm0,32(%rbp)
-	cmpq	$8,%rdx
-	jb	L$ctr_enc_short
+
+
 
 	movl	%eax,%ebx
 	shlq	$7,%rax
@@ -1510,26 +1518,8 @@ L$ctr_enc_loop_done:
 	movdqu	96(%r12),%xmm13
 	pxor	%xmm13,%xmm1
 	movdqu	%xmm1,96(%r13)
-	jmp	L$ctr_enc_done
 
-.p2align	4
-L$ctr_enc_short:
-	leaq	32(%rbp),%rdi
-	leaq	48(%rbp),%rsi
-	leaq	(%r15),%rdx
-	call	_aes_nohw_encrypt
-	movdqu	(%r12),%xmm0
-	leaq	16(%r12),%r12
-	movl	44(%rbp),%eax
-	bswapl	%eax
-	pxor	48(%rbp),%xmm0
-	incl	%eax
-	movdqu	%xmm0,(%r13)
-	bswapl	%eax
-	leaq	16(%r13),%r13
-	movl	%eax,44(%rsp)
-	decq	%r14
-	jnz	L$ctr_enc_short
+
 
 L$ctr_enc_done:
 	leaq	(%rsp),%rax
