@@ -243,10 +243,12 @@ linux_aarch64_sources := \
   linux-aarch64/crypto/chacha/chacha-armv8.S\
   linux-aarch64/crypto/fipsmodule/aesv8-armx64.S\
   linux-aarch64/crypto/fipsmodule/armv8-mont.S\
+  linux-aarch64/crypto/fipsmodule/ghash-neon-armv8.S\
   linux-aarch64/crypto/fipsmodule/ghashv8-armx64.S\
   linux-aarch64/crypto/fipsmodule/sha1-armv8.S\
   linux-aarch64/crypto/fipsmodule/sha256-armv8.S\
   linux-aarch64/crypto/fipsmodule/sha512-armv8.S\
+  linux-aarch64/crypto/fipsmodule/vpaes-armv8.S\
   linux-aarch64/crypto/test/trampoline-armv8.S\
 
 linux_arm_sources := \
@@ -274,6 +276,7 @@ linux_x86_sources := \
   linux-x86/crypto/fipsmodule/aesni-x86.S\
   linux-x86/crypto/fipsmodule/bn-586.S\
   linux-x86/crypto/fipsmodule/co-586.S\
+  linux-x86/crypto/fipsmodule/ghash-ssse3-x86.S\
   linux-x86/crypto/fipsmodule/ghash-x86.S\
   linux-x86/crypto/fipsmodule/md5-586.S\
   linux-x86/crypto/fipsmodule/sha1-586.S\
