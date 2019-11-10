@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/subtle"
@@ -17,8 +18,6 @@ import (
 	"io"
 	"math/big"
 	"time"
-
-	"boringssl.googlesource.com/boringssl/ssl/test/runner/ed25519"
 )
 
 // serverHandshakeState contains details of a server handshake in progress.
@@ -211,7 +210,7 @@ func (hs *serverHandshakeState) readClientHello() error {
 	if config.Bugs.FailIfCECPQ2Offered {
 		for _, offeredCurve := range hs.clientHello.supportedCurves {
 			if isPqGroup(offeredCurve) {
-				return errors.New("tls: CECPQ2 or CECPQ2b was offered")
+				return errors.New("tls: CECPQ2 was offered")
 			}
 		}
 	}
@@ -1228,7 +1227,7 @@ func (hs *serverHandshakeState) processClientHello() (isResume bool, err error) 
 Curves:
 	for _, curve := range hs.clientHello.supportedCurves {
 		if isPqGroup(curve) && c.vers < VersionTLS13 {
-			// CECPQ2 and CECPQ2b is TLS 1.3-only.
+			// CECPQ2 is TLS 1.3-only.
 			continue
 		}
 
@@ -2057,7 +2056,7 @@ func (hs *serverHandshakeState) processCertsFromClient(certificates [][]byte) (c
 	}
 
 	if len(certs) > 0 {
-		pub := getCertificatePublicKey(certs[0])
+		pub := certs[0].PublicKey
 		switch pub.(type) {
 		case *ecdsa.PublicKey, *rsa.PublicKey, ed25519.PublicKey:
 			break

@@ -171,10 +171,10 @@ static bool add_new_session_tickets(SSL_HANDSHAKE *hs, bool *out_sent_tickets) {
     }
 
     if (ssl->enable_early_data) {
-      CBB early_data_info;
+      CBB early_data;
       if (!CBB_add_u16(&extensions, TLSEXT_TYPE_early_data) ||
-          !CBB_add_u16_length_prefixed(&extensions, &early_data_info) ||
-          !CBB_add_u32(&early_data_info, session->ticket_max_early_data) ||
+          !CBB_add_u16_length_prefixed(&extensions, &early_data) ||
+          !CBB_add_u32(&early_data, session->ticket_max_early_data) ||
           !CBB_flush(&extensions)) {
         return false;
       }
@@ -976,7 +976,7 @@ static enum ssl_hs_wait_t do_send_new_session_ticket(SSL_HANDSHAKE *hs) {
   // the case of a small server write buffer. Consumers which don't write data
   // to the client will need to do a zero-byte write if they wish to flush the
   // tickets.
-  if (hs->ssl->ctx->quic_method != nullptr && sent_tickets) {
+  if (hs->ssl->quic_method != nullptr && sent_tickets) {
     return ssl_hs_flush;
   }
   return ssl_hs_ok;

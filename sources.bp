@@ -97,6 +97,7 @@ cc_defaults {
         "src/crypto/dsa/dsa.c",
         "src/crypto/dsa/dsa_asn1.c",
         "src/crypto/ec_extra/ec_asn1.c",
+        "src/crypto/ec_extra/ec_derive.c",
         "src/crypto/ecdh_extra/ecdh_extra.c",
         "src/crypto/ecdsa_extra/ecdsa_asn1.c",
         "src/crypto/engine/engine.c",
@@ -243,18 +244,12 @@ cc_defaults {
         "src/crypto/x509v3/v3_sxnet.c",
         "src/crypto/x509v3/v3_utl.c",
         "src/third_party/fiat/curve25519.c",
-        "src/third_party/sike/asm/fp_generic.c",
-        "src/third_party/sike/curve_params.c",
-        "src/third_party/sike/fpx.c",
-        "src/third_party/sike/isogeny.c",
-        "src/third_party/sike/sike.c",
     ],
     target: {
         linux_arm64: {
             srcs: [
                 "linux-aarch64/crypto/chacha/chacha-armv8.S",
                 "linux-aarch64/crypto/test/trampoline-armv8.S",
-                "linux-aarch64/crypto/third_party/sike/asm/fp-armv8.S",
             ],
         },
         linux_arm: {
@@ -277,7 +272,6 @@ cc_defaults {
                 "linux-x86_64/crypto/cipher_extra/aes128gcmsiv-x86_64.S",
                 "linux-x86_64/crypto/cipher_extra/chacha20_poly1305_x86_64.S",
                 "linux-x86_64/crypto/test/trampoline-x86_64.S",
-                "linux-x86_64/crypto/third_party/sike/asm/fp-x86_64.S",
                 "src/crypto/hrss/asm/poly_rq_mul.S",
             ],
         },
@@ -313,6 +307,7 @@ cc_defaults {
                 "linux-arm/crypto/fipsmodule/sha1-armv4-large.S",
                 "linux-arm/crypto/fipsmodule/sha256-armv4.S",
                 "linux-arm/crypto/fipsmodule/sha512-armv4.S",
+                "linux-arm/crypto/fipsmodule/vpaes-armv7.S",
             ],
         },
         linux_x86: {
