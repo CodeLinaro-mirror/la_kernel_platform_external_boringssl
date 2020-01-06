@@ -86,6 +86,7 @@ cc_object {
     sanitize: {
         address: false,
         hwaddress: false,
+        fuzzer: false,
     },
     target: {
         android: {
@@ -237,6 +238,11 @@ cc_library {
         "boringssl_defaults",
         "boringssl_flags",
     ],
+    target: {
+        windows: {
+            enabled: true,
+        },
+    },
     unique_host_soname: true,
 
     shared_libs: ["libcrypto"],
