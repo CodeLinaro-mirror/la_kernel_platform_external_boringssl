@@ -39,6 +39,11 @@ cc_binary {
         "//external/conscrypt/apex/testing",
     ],
     defaults: ["boringssl_self_test_defaults"],
+    apex_available: [
+        "//apex_available:platform",
+        "com.android.conscrypt",
+    ],
+    min_sdk_version: "29",
 }
 
 cc_binary {
