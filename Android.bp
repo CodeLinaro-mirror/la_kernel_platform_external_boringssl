@@ -95,7 +95,11 @@ cc_object {
         fuzzer: false,
     },
     target: {
+        linux_bionic: {
+            header_libs: ["libc_headers"], // TODO(b/153662223): Clean this up.
+        },
         android: {
+            header_libs: ["libc_headers"], // TODO(b/153662223): Clean this up.
             cflags: [
                 "-DBORINGSSL_FIPS",
                 "-fPIC",
@@ -226,9 +230,13 @@ cc_library {
 cc_library_static {
     name: "libcrypto_static",
     visibility: [
+        "//art/build/sdk",
         "//bootable/recovery/updater",
         "//external/conscrypt",
         "//external/python/cpython2",
+        // Strictly, only the *static* toybox for legacy devices should have
+        // access to libcrypto_static, but we can't express that.
+        "//external/toybox",
         "//frameworks/ml/nn:__subpackages__",
         "//hardware/interfaces/confirmationui/1.0/vts/functional",
         "//hardware/interfaces/drm/1.0/vts/functional",
@@ -315,6 +323,14 @@ cc_binary {
         darwin: {
             enabled: false,
         },
+        android: {
+            compile_multilib: "both",
+        },
+    },
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
     },
 }
 
@@ -342,6 +358,16 @@ cc_binary {
         "src/util/fipstools/cavp/cavp_test_util.cc",
         "src/util/fipstools/cavp/cavp_tlskdf_test.cc",
     ],
+    target: {
+        android: {
+            compile_multilib: "both",
+        },
+    },
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
+    },
 
     shared_libs: [
         "libcrypto",
