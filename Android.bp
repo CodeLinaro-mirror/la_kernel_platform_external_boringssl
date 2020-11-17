@@ -53,6 +53,8 @@ cc_defaults {
 cc_defaults {
     name: "libcrypto_defaults",
     host_supported: true,
+    ramdisk_available: true,
+    vendor_ramdisk_available: true,
 
     // Windows and Macs both have problems with assembly files
     target: {
@@ -126,8 +128,8 @@ cc_object {
     apex_available: [
         "//apex_available:platform",
         "com.android.adbd",
+        "com.android.art",
         "com.android.art.debug",
-        "com.android.art.release",
         "com.android.art.testing",
         "com.android.bluetooth.updatable",
         "com.android.conscrypt",
@@ -212,8 +214,8 @@ cc_library {
     apex_available: [
         "//apex_available:platform",
         "com.android.adbd",
+        "com.android.art",
         "com.android.art.debug",
-        "com.android.art.release",
         "com.android.art.testing",
         "com.android.bluetooth.updatable",
         "com.android.conscrypt",
