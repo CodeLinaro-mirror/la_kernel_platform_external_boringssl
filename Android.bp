@@ -241,7 +241,6 @@ cc_library_static {
         // Strictly, only the *static* toybox for legacy devices should have
         // access to libcrypto_static, but we can't express that.
         "//external/toybox",
-        "//frameworks/ml/nn:__subpackages__",
         "//hardware/interfaces/confirmationui/1.0/vts/functional",
         "//hardware/interfaces/drm/1.0/vts/functional",
         "//hardware/interfaces/drm/1.2/vts/functional",
@@ -250,6 +249,7 @@ cc_library_static {
         "//hardware/interfaces/keymaster/4.0/vts/functional",
         "//hardware/interfaces/keymaster/4.1/vts/functional",
         "//packages/modules/DnsResolver/tests:__subpackages__",
+        "//packages/modules/NeuralNetworks:__subpackages__",
         "//system/core/adb",
         "//system/core/init",
         "//system/core/fs_mgr/liblp",
