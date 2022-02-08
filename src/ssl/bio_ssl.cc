@@ -22,7 +22,9 @@ static int ssl_read(BIO *bio, char *out, int outl) {
     return 0;
   }
 
+#ifndef USE_LE_MODE
   BIO_clear_retry_flags(bio);
+#endif
 
   const int ret = SSL_read(ssl, out, outl);
 
@@ -62,7 +64,9 @@ static int ssl_write(BIO *bio, const char *out, int outl) {
     return 0;
   }
 
+#ifndef USE_LE_MODE
   BIO_clear_retry_flags(bio);
+#endif
 
   const int ret = SSL_write(ssl, out, outl);
 
@@ -117,7 +121,9 @@ static long ssl_ctrl(BIO *bio, int cmd, long num, void *ptr) {
       return SSL_pending(ssl);
 
     case BIO_CTRL_FLUSH: {
+#ifndef USE_LE_MODE
       BIO_clear_retry_flags(bio);
+#endif
       long ret = BIO_ctrl(SSL_get_wbio(ssl), cmd, num, ptr);
       BIO_copy_next_retry(bio);
       return ret;

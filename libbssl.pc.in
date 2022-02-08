@@ -1,0 +1,12 @@
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+
+Name: libbssl
+Description: bssl android library
+Version: @VERSION@
+Libs: -L${libdir} -lbssl
+Cflags: -I${includedir}
+

@@ -110,8 +110,9 @@ int SSL_use_RSAPrivateKey(SSL *ssl, RSA *rsa) {
   }
 
   RSA_up_ref(rsa);
+#ifndef USE_LE_MODE
   EVP_PKEY_assign_RSA(pkey, rsa);
-
+#endif
   ret = ssl_set_pkey(ssl->cert, pkey);
   EVP_PKEY_free(pkey);
 
@@ -173,8 +174,9 @@ int SSL_CTX_use_RSAPrivateKey(SSL_CTX *ctx, RSA *rsa) {
   }
 
   RSA_up_ref(rsa);
+#ifndef USE_LE_MODE
   EVP_PKEY_assign_RSA(pkey, rsa);
-
+#endif
   ret = ssl_set_pkey(ctx->cert, pkey);
   EVP_PKEY_free(pkey);
   return ret;
