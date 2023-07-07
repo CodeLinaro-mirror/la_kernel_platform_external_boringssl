@@ -91,6 +91,8 @@ extern "C" {
 // be the largest fields anyone plausibly uses.
 #define EC_MAX_BYTES 66
 #define EC_MAX_WORDS ((EC_MAX_BYTES + BN_BYTES - 1) / BN_BYTES)
+#define EC_MAX_COMPRESSED (EC_MAX_BYTES + 1)
+#define EC_MAX_UNCOMPRESSED (2 * EC_MAX_BYTES + 1)
 
 static_assert(EC_MAX_WORDS <= BN_SMALL_MAX_WORDS,
               "bn_*_small functions not usable");
@@ -119,8 +121,8 @@ OPENSSL_EXPORT void ec_scalar_to_bytes(const EC_GROUP *group, uint8_t *out,
 // ec_scalar_from_bytes deserializes |in| and stores the resulting scalar over
 // group |group| to |out|. It returns one on success and zero if |in| is
 // invalid.
-int ec_scalar_from_bytes(const EC_GROUP *group, EC_SCALAR *out,
-                         const uint8_t *in, size_t len);
+OPENSSL_EXPORT int ec_scalar_from_bytes(const EC_GROUP *group, EC_SCALAR *out,
+                                        const uint8_t *in, size_t len);
 
 // ec_scalar_reduce sets |out| to |words|, reduced modulo the group order.
 // |words| must be less than order^2. |num| must be at most twice the width of
@@ -279,8 +281,8 @@ void ec_affine_to_jacobian(const EC_GROUP *group, EC_RAW_POINT *out,
 //
 // If only extracting the x-coordinate, use |ec_get_x_coordinate_*| which is
 // slightly faster.
-int ec_jacobian_to_affine(const EC_GROUP *group, EC_AFFINE *out,
-                          const EC_RAW_POINT *p);
+OPENSSL_EXPORT int ec_jacobian_to_affine(const EC_GROUP *group, EC_AFFINE *out,
+                                         const EC_RAW_POINT *p);
 
 // ec_jacobian_to_affine_batch converts |num| points in |in| from Jacobian
 // coordinates to affine coordinates and writes the results to |out|. It returns
@@ -560,6 +562,12 @@ struct ec_method_st {
   //
   // This function is used in hash-to-curve and may be NULL in curves not used
   // with hash-to-curve.
+  //
+  // TODO(https://crbug.com/boringssl/567): hash-to-curve uses this as part of
+  // computing a square root, which is what compressed coordinates ultimately
+  // needs to avoid |BIGNUM|. Can we unify this a bit? By generalizing to
+  // arbitrary exponentiation, we also miss an opportunity to use a specialized
+  // addition chain.
   void (*felem_exp)(const EC_GROUP *group, EC_FELEM *out, const EC_FELEM *a,
                     const BN_ULONG *exp, size_t num_exp);
 
@@ -650,6 +658,11 @@ void ec_GFp_mont_mul_precomp(const EC_GROUP *group, EC_RAW_POINT *r,
                              const EC_PRECOMP *p0, const EC_SCALAR *scalar0,
                              const EC_PRECOMP *p1, const EC_SCALAR *scalar1,
                              const EC_PRECOMP *p2, const EC_SCALAR *scalar2);
+void ec_GFp_mont_felem_reduce(const EC_GROUP *group, EC_FELEM *out,
+                              const BN_ULONG *words, size_t num);
+void ec_GFp_mont_felem_exp(const EC_GROUP *group, EC_FELEM *out,
+                           const EC_FELEM *a, const BN_ULONG *exp,
+                           size_t num_exp);
 
 // ec_compute_wNAF writes the modified width-(w+1) Non-Adjacent Form (wNAF) of
 // |scalar| to |out|. |out| must have room for |bits| + 1 elements, each of
