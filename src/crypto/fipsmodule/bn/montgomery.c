@@ -122,7 +122,7 @@
 #if !defined(OPENSSL_NO_ASM) &&                         \
     (defined(OPENSSL_X86) || defined(OPENSSL_X86_64) || \
      defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64))
-#define OPENSSL_BN_ASM_MONT
+//#define OPENSSL_BN_ASM_MONT
 #endif
 
 static int bn_mod_mul_montgomery_fallback(BIGNUM *r, const BIGNUM *a,

@@ -25,19 +25,19 @@ extern "C" {
 
 
 #if !defined(OPENSSL_NO_ASM) && (defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64))
-#define HWAES
+/*#define HWAES
 
 static int hwaes_capable(void) {
   return CRYPTO_is_ARMv8_AES_capable();
-}
+}*/
 #endif  /* !NO_ASM && (AES || AARCH64) */
 
 #if !defined(OPENSSL_NO_ASM) && defined(OPENSSL_PPC64LE)
-#define HWAES
+/*#define HWAES
 
 static int hwaes_capable(void) {
   return CRYPTO_is_PPC64LE_vcrypto_capable();
-}
+}*/
 #endif  /* !NO_ASM && PPC64LE */
 
 
