@@ -338,6 +338,7 @@ typedef OPENSSL_STACK _STACK;
 
 // The following functions call the corresponding |OPENSSL_sk_*| function.
 OPENSSL_EXPORT OPENSSL_DEPRECATED OPENSSL_STACK *sk_new_null(void);
+OPENSSL_EXPORT OPENSSL_DEPRECATED OPENSSL_STACK *sk_dup(const OPENSSL_STACK *sk);
 OPENSSL_EXPORT OPENSSL_DEPRECATED size_t sk_num(const OPENSSL_STACK *sk);
 OPENSSL_EXPORT OPENSSL_DEPRECATED void *sk_value(const OPENSSL_STACK *sk,
                                                  size_t i);
