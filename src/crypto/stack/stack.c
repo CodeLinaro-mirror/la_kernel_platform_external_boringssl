@@ -516,6 +516,8 @@ OPENSSL_STACK *OPENSSL_sk_deep_copy(const OPENSSL_STACK *sk,
 
 OPENSSL_STACK *sk_new_null(void) { return OPENSSL_sk_new_null(); }
 
+OPENSSL_STACK *sk_dup(const OPENSSL_STACK *sk) { return OPENSSL_sk_dup(sk); }
+
 size_t sk_num(const OPENSSL_STACK *sk) { return OPENSSL_sk_num(sk); }
 
 void *sk_value(const OPENSSL_STACK *sk, size_t i) {
