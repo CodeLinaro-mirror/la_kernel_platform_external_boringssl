@@ -401,7 +401,7 @@ cc_library_static {
         "boringssl_flags_baremetal",
     ],
     visibility: [
-        "//external/avb",
+        "//external/avb:__subpackages__",
         "//external/open-dice",
         "//packages/modules/Virtualization:__subpackages__",
         "//system/security/diced/open_dice",
@@ -622,6 +622,8 @@ cc_test {
     name: "boringssl_crypto_test",
     test_config: "CryptoNativeTests.xml",
     host_supported: false,
+    vendor_available: false,
+    product_available: false,
     per_testcase_directory: true,
     compile_multilib: "both",
     multilib: {
@@ -639,7 +641,10 @@ cc_test {
     whole_static_libs: ["boringssl_test_support"],
     // Statically link the library to test to ensure we always pick up the
     // correct version regardless of device linker configuration.
-    static_libs: ["libcrypto_static"],
+    static_libs: [
+        "libcrypto_static",
+        "libgmock_ndk",
+    ],
     target: {
         android: {
             test_suites: ["mts-conscrypt"],
@@ -651,6 +656,8 @@ cc_test {
     name: "boringssl_ssl_test",
     test_config: "SslNativeTests.xml",
     host_supported: false,
+    vendor_available: false,
+    product_available: false,
     per_testcase_directory: true,
     compile_multilib: "both",
     multilib: {
@@ -670,6 +677,7 @@ cc_test {
     // correct version regardless of device linker configuration.
     static_libs: [
         "libcrypto_static",
+        "libgmock_ndk",
         "libssl",
     ],
     target: {
@@ -683,6 +691,15 @@ cc_test {
 cc_binary {
     name: "test_fips",
     host_supported: false,
+    compile_multilib: "both",
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
+        lib64: {
+            suffix: "",
+        },
+    },
     defaults: [
         "boringssl_flags",
     ],
