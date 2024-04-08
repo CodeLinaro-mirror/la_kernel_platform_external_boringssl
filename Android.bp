@@ -246,9 +246,6 @@ cc_library {
     vendor_available: true,
     product_available: true,
     native_bridge_supported: true,
-    vndk: {
-        enabled: true,
-    },
     double_loadable: true,
     recovery_available: true,
     defaults: [
@@ -378,6 +375,7 @@ cc_library_static {
         "//system/security/keystore/tests",
         "//system/security/provisioner",
         "//test/vts-testcase/security/avb",
+        "//vendor:__subpackages__",
     ],
     min_sdk_version: "29",
     apex_available: [
@@ -454,9 +452,6 @@ cc_library {
     vendor_available: true,
     product_available: true,
     native_bridge_supported: true,
-    vndk: {
-        enabled: true,
-    },
     host_supported: true,
     defaults: [
         "libssl_sources",
