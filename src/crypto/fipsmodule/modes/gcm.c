@@ -61,7 +61,7 @@
     (defined(OPENSSL_X86) || defined(OPENSSL_X86_64) || \
      defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64) || \
      defined(OPENSSL_PPC64LE))
-#define GHASH_ASM
+//#define GHASH_ASM
 #endif
 
 #define PACK(s) ((size_t)(s) << (sizeof(size_t) * 8 - 16))

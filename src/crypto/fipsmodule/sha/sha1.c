@@ -67,7 +67,7 @@
     (defined(OPENSSL_X86) || defined(OPENSSL_X86_64) || \
      defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64) || \
      defined(OPENSSL_PPC64LE))
-#define SHA1_ASM
+//#define SHA1_ASM
 #endif
 
 int SHA1_Init(SHA_CTX *sha) {

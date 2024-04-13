@@ -75,11 +75,11 @@
  * - By supporting only a transform function that operates on *aligned* data
  *   the collector/padding function is simpler and easier to optimize. */
 
-#if !defined(OPENSSL_NO_ASM) &&                         \
+/*#if !defined(OPENSSL_NO_ASM) &&                         \
     (defined(OPENSSL_X86) || defined(OPENSSL_X86_64) || \
      defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64))
 #define SHA512_ASM
-#endif
+#endif*/
 
 #if defined(OPENSSL_X86) || defined(OPENSSL_X86_64) || \
     defined(__ARM_FEATURE_UNALIGNED)

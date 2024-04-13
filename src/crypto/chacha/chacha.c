@@ -28,6 +28,7 @@
   (((uint32_t)((p)[0])) | ((uint32_t)((p)[1]) << 8) | \
    ((uint32_t)((p)[2]) << 16) | ((uint32_t)((p)[3]) << 24))
 
+#if 0
 #if !defined(OPENSSL_NO_ASM) &&                         \
     (defined(OPENSSL_X86) || defined(OPENSSL_X86_64) || \
      defined(OPENSSL_ARM) || defined(OPENSSL_AARCH64))
@@ -68,7 +69,8 @@ void CRYPTO_chacha_20(uint8_t *out, const uint8_t *in, size_t in_len,
 }
 
 #else
-
+#endif
+#endif
 /* sigma contains the ChaCha constants, which happen to be an ASCII string. */
 static const uint8_t sigma[16] = { 'e', 'x', 'p', 'a', 'n', 'd', ' ', '3',
                                    '2', '-', 'b', 'y', 't', 'e', ' ', 'k' };
@@ -164,4 +166,4 @@ void CRYPTO_chacha_20(uint8_t *out, const uint8_t *in, size_t in_len,
   }
 }
 
-#endif
+//#endif
