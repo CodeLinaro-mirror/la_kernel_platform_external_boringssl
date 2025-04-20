@@ -1,16 +1,16 @@
-/* Copyright 2016 The BoringSSL Authors
- *
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
- * SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
- * OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE. */
+// Copyright 2016 The BoringSSL Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <limits.h>
 
@@ -2774,8 +2774,7 @@ TEST(X509Test, TestPrintUTCTIME) {
     size_t len;
     ASSERT_TRUE(BIO_mem_contents(bio.get(), &contents, &len));
     EXPECT_EQ(ok, (strcmp(t.want, "Bad time value") != 0) ? 1 : 0);
-    EXPECT_EQ(t.want,
-              std::string(reinterpret_cast<const char *>(contents), len));
+    EXPECT_EQ(t.want, bssl::BytesAsStringView(bssl::Span(contents, len)));
   }
 }
 
@@ -2975,6 +2974,8 @@ TEST(X509Test, MismatchAlgorithms) {
                           X509_R_SIGNATURE_ALGORITHM_MISMATCH));
 }
 
+// TODO(crbug.com/387737061): Test that this function can decrypt certificates
+// and CRLs, even though it leaves encrypted private keys alone.
 TEST(X509Test, PEMX509Info) {
   std::string cert = kRootCAPEM;
   auto cert_obj = CertFromPEM(kRootCAPEM);
@@ -2988,6 +2989,9 @@ TEST(X509Test, PEMX509Info) {
   auto crl_obj = CRLFromPEM(kBasicCRL);
   ASSERT_TRUE(crl_obj);
 
+  bssl::UniquePtr<EVP_PKEY> placeholder_key(EVP_PKEY_new());
+  ASSERT_TRUE(placeholder_key);
+
   std::string unknown =
       "-----BEGIN UNKNOWN-----\n"
       "AAAA\n"
@@ -2997,6 +3001,16 @@ TEST(X509Test, PEMX509Info) {
       "-----BEGIN CERTIFICATE-----\n"
       "AAAA\n"
       "-----END CERTIFICATE-----\n";
+
+  std::string encrypted_key = R"(-----BEGIN EC PRIVATE KEY-----
+Proc-Type: 4,ENCRYPTED
+DEK-Info: AES-128-CBC,B3B2988AECAE6EAB0D043105994C1123
+
+RK7DUIGDHWTFh2rpTX+dR88hUyC1PyDlIULiNCkuWFwHrJbc1gM6hMVOKmU196XC
+iITrIKmilFm9CPD6Tpfk/NhI/QPxyJlk1geIkxpvUZ2FCeMuYI1To14oYOUKv14q
+wr6JtaX2G+pOmwcSPymZC4u2TncAP7KHgS8UGcMw8CE=
+-----END EC PRIVATE KEY-----
+)";
 
   // Each X509_INFO contains at most one certificate, CRL, etc. The format
   // creates a new X509_INFO when a repeated type is seen.
@@ -3013,7 +3027,12 @@ TEST(X509Test, PEMX509Info) {
       // Doubled keys also start new entries.
       rsa + rsa + rsa + rsa + crl +
       // As do CRLs.
-      crl + crl;
+      crl + crl +
+      // Encrypted private keys are not decrypted (decryption failures would be
+      // fatal) and just returned as placeholder.
+      crl + cert + encrypted_key +
+      // Placeholder keys are still keys, so a new key starts a new entry.
+      rsa;
 
   const struct ExpectedInfo {
     const X509 *cert;
@@ -3033,6 +3052,8 @@ TEST(X509Test, PEMX509Info) {
       {nullptr, rsa_obj.get(), crl_obj.get()},
       {nullptr, nullptr, crl_obj.get()},
       {nullptr, nullptr, crl_obj.get()},
+      {cert_obj.get(), placeholder_key.get(), crl_obj.get()},
+      {nullptr, rsa_obj.get(), nullptr},
   };
 
   auto check_info = [](const ExpectedInfo *expected, const X509_INFO *info) {
@@ -3048,8 +3069,14 @@ TEST(X509Test, PEMX509Info) {
     }
     if (expected->key != nullptr) {
       ASSERT_NE(nullptr, info->x_pkey);
-      // EVP_PKEY_cmp returns one if the keys are equal.
-      EXPECT_EQ(1, EVP_PKEY_cmp(expected->key, info->x_pkey->dec_pkey));
+      if (EVP_PKEY_id(expected->key) == EVP_PKEY_NONE) {
+        // Expect a placeholder key.
+        EXPECT_FALSE(info->x_pkey->dec_pkey);
+      } else {
+        // EVP_PKEY_cmp returns one if the keys are equal.
+        ASSERT_TRUE(info->x_pkey->dec_pkey);
+        EXPECT_EQ(1, EVP_PKEY_cmp(expected->key, info->x_pkey->dec_pkey));
+      }
     } else {
       EXPECT_EQ(nullptr, info->x_pkey);
     }
@@ -5440,7 +5467,7 @@ TEST(X509Test, Print) {
   const uint8_t *data;
   size_t data_len;
   ASSERT_TRUE(BIO_mem_contents(bio.get(), &data, &data_len));
-  std::string print(reinterpret_cast<const char *>(data), data_len);
+  auto print = bssl::BytesAsStringView(bssl::Span(data, data_len));
   EXPECT_EQ(print, R"(Certificate:
     Data:
         Version: 3 (0x2)
@@ -7138,6 +7165,7 @@ TEST(X509Test, NameAttributeValues) {
        V_ASN1_UNIVERSALSTRING, std::string("\0\0\0a", 4)},
       {CBS_ASN1_BMPSTRING, std::string("\0a", 2), V_ASN1_BMPSTRING,
        std::string("\0a", 2)},
+      {CBS_ASN1_OCTETSTRING, "abc", V_ASN1_OCTET_STRING, "abc"},
 
       // ENUMERATED is supported but, currently, INTEGER is not.
       {CBS_ASN1_ENUMERATED, "\x01", V_ASN1_ENUMERATED, "\x01"},
@@ -7163,8 +7191,8 @@ TEST(X509Test, NameAttributeValues) {
       {15, "", 15 /* not a type; reserved value */, ""},
       {29, "", 29 /* CHARACTER STRING */, ""},
 
-      // TODO(crbug.com/boringssl/412): Attribute values are an ANY DEFINED BY
-      // type, so we actually shoudl be accepting all ASN.1 types. We currently
+      // TODO(crbug.com/42290275): Attribute values are an ANY DEFINED BY type,
+      // so we actually should be accepting all ASN.1 types. We currently
       // do not and only accept the above types. Extend this test when we fix
       // this.
   };
@@ -7241,17 +7269,16 @@ TEST(X509Test, NameAttributeValues) {
       {CBS_ASN1_UTF8STRING | CBS_ASN1_CONSTRUCTED, ""},
       {CBS_ASN1_SEQUENCE & ~CBS_ASN1_CONSTRUCTED, ""},
 
-      // TODO(crbug.com/boringssl/412): The following inputs should parse, but
-      // are currently rejected because they cannot be represented in
-      // |ASN1_PRINTABLE|, either because they don't fit in |ASN1_STRING| or
-      // simply in the |B_ASN1_PRINTABLE| bitmask.
+      // TODO(crbug.com/42290275): The following inputs should parse, but are
+      // currently rejected because they cannot be represented in
+      // |ASN1_ANY_AS_STRING|, either because they don't fit in |ASN1_STRING| or
+      // simply in the |B_ASN1_ANY_AS_STRING| bitmask.
       {CBS_ASN1_NULL, ""},
       {CBS_ASN1_BOOLEAN, std::string("\x00", 1)},
       {CBS_ASN1_BOOLEAN, "\xff"},
       {CBS_ASN1_OBJECT, "\x01\x02\x03\x04"},
       {CBS_ASN1_INTEGER, "\x01"},
       {CBS_ASN1_INTEGER, "\xff"},
-      {CBS_ASN1_OCTETSTRING, ""},
       {CBS_ASN1_UTCTIME, "700101000000Z"},
       {CBS_ASN1_GENERALIZEDTIME, "19700101000000Z"},
       {CBS_ASN1_SET, ""},

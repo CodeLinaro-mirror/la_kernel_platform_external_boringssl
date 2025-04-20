@@ -1,14 +1,19 @@
-/*
- * Copyright 2005-2016 The OpenSSL Project Authors. All Rights Reserved.
- *
- * Licensed under the OpenSSL license (the "License").  You may not use
- * this file except in compliance with the License.  You can obtain a copy
- * in the file LICENSE in the source distribution or at
- * https://www.openssl.org/source/license.html
- */
+// Copyright 2005-2016 The OpenSSL Project Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-#ifndef OPENSSL_HEADER_ASN1_INTERNAL_H
-#define OPENSSL_HEADER_ASN1_INTERNAL_H
+#ifndef OPENSSL_HEADER_CRYPTO_ASN1_INTERNAL_H
+#define OPENSSL_HEADER_CRYPTO_ASN1_INTERNAL_H
 
 #include <time.h>
 
@@ -209,9 +214,22 @@ typedef struct ASN1_EXTERN_FUNCS_st {
   ASN1_ex_i2d *asn1_ex_i2d;
 } ASN1_EXTERN_FUNCS;
 
+// ASN1_ANY_AS_STRING is an MSTRING that supports an arbitrary subset of types
+// representable in ASN1_STRING, used by X.509 name attribute values.
+//
+// TODO(crbug.com/42290275): This should support all types and also encode
+// non-ASN1_STRING values in a V_ASN1_OTHER structure.
+#define B_ASN1_ANY_AS_STRING                                          \
+  (B_ASN1_NUMERICSTRING | B_ASN1_PRINTABLESTRING | B_ASN1_T61STRING | \
+   B_ASN1_IA5STRING | B_ASN1_BIT_STRING | B_ASN1_UNIVERSALSTRING |    \
+   B_ASN1_BMPSTRING | B_ASN1_UTF8STRING | B_ASN1_SEQUENCE |           \
+   B_ASN1_OCTET_STRING | B_ASN1_UNKNOWN)
+
+DECLARE_ASN1_ITEM(ASN1_ANY_AS_STRING)
+
 
 #if defined(__cplusplus)
 }  // extern C
 #endif
 
-#endif  // OPENSSL_HEADER_ASN1_INTERNAL_H
+#endif  // OPENSSL_HEADER_CRYPTO_ASN1_INTERNAL_H

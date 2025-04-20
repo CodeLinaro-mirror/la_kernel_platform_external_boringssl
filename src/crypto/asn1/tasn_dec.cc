@@ -1,11 +1,16 @@
-/*
- * Copyright 2000-2016 The OpenSSL Project Authors. All Rights Reserved.
- *
- * Licensed under the OpenSSL license (the "License").  You may not use
- * this file except in compliance with the License.  You can obtain a copy
- * in the file LICENSE in the source distribution or at
- * https://www.openssl.org/source/license.html
- */
+// Copyright 2000-2016 The OpenSSL Project Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <openssl/asn1.h>
 #include <openssl/asn1t.h>
@@ -792,12 +797,12 @@ static int asn1_ex_c2i(ASN1_VALUE **pval, const unsigned char *cont, long len,
     case V_ASN1_OTHER:
     case V_ASN1_SET:
     case V_ASN1_SEQUENCE:
-    // TODO(crbug.com/boringssl/412): This default case should be removed, now
-    // that we've resolved https://crbug.com/boringssl/561. However, it is still
-    // needed to support some edge cases in |ASN1_PRINTABLE|. |ASN1_PRINTABLE|
-    // broadly doesn't tolerate unrecognized universal tags, but except for
-    // eight values that map to |B_ASN1_UNKNOWN| instead of zero. See the
-    // X509Test.NameAttributeValues test.
+    // TODO(crbug.com/42290275): This default case should be removed, now
+    // that we've resolved https://crbug.com/42290430. However, it is still
+    // needed to support some edge cases in |ASN1_PRINTABLE| and
+    // |ASN1_ANY_AS_STRING|. They broadly don't tolerate unrecognized universal
+    // tags, except for eight values that map to |B_ASN1_UNKNOWN| instead of
+    // zero. See the X509Test.NameAttributeValues test.
     default: {
       CBS cbs;
       CBS_init(&cbs, cont, (size_t)len);

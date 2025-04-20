@@ -214,7 +214,7 @@ cc_object {
 
 bootstrap_go_package {
     name: "bssl_ar",
-    pkgPath: "boringssl.googlesource.com/boringssl/util/ar",
+    pkgPath: "boringssl.googlesource.com/boringssl.git/util/ar",
     srcs: [
         "src/util/ar/ar.go",
     ],
@@ -225,7 +225,7 @@ bootstrap_go_package {
 
 bootstrap_go_package {
     name: "bssl_fipscommon",
-    pkgPath: "boringssl.googlesource.com/boringssl/util/fipstools/fipscommon",
+    pkgPath: "boringssl.googlesource.com/boringssl.git/util/fipstools/fipscommon",
     srcs: [
         "src/util/fipstools/fipscommon/const.go",
     ],
@@ -430,8 +430,7 @@ cc_defaults {
     name: "boringssl_fuzz_unsafe_defaults",
     host_supported: true,
     cflags: [
-        "-DBORINGSSL_UNSAFE_DETERMINISTIC_MODE",
-        "-DBORINGSSL_UNSAFE_FUZZER_MODE",
+        "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION",
     ],
     visibility: [
         "//frameworks/native/libs/binder/tests:__subpackages__",

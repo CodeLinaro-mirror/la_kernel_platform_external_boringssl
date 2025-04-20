@@ -1,17 +1,23 @@
-/*
- * Copyright 2000-2016 The OpenSSL Project Authors. All Rights Reserved.
- *
- * Licensed under the OpenSSL license (the "License").  You may not use
- * this file except in compliance with the License.  You can obtain a copy
- * in the file LICENSE in the source distribution or at
- * https://www.openssl.org/source/license.html
- */
+// Copyright 2000-2016 The OpenSSL Project Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 #include <openssl/asn1.h>
 
 #include <openssl/asn1t.h>
 
-// Declarations for string types
+#include "internal.h"
+
 
 #define IMPLEMENT_ASN1_STRING_FUNCTIONS(sname)                         \
   IMPLEMENT_ASN1_TYPE(sname)                                           \
@@ -58,6 +64,8 @@ IMPLEMENT_ASN1_FUNCTIONS_const_fname(ASN1_STRING, DISPLAYTEXT, DISPLAYTEXT)
 IMPLEMENT_ASN1_MSTRING(DIRECTORYSTRING, B_ASN1_DIRECTORYSTRING)
 IMPLEMENT_ASN1_FUNCTIONS_const_fname(ASN1_STRING, DIRECTORYSTRING,
                                      DIRECTORYSTRING)
+
+IMPLEMENT_ASN1_MSTRING(ASN1_ANY_AS_STRING, B_ASN1_ANY_AS_STRING)
 
 // Three separate BOOLEAN type: normal, DEFAULT TRUE and DEFAULT FALSE
 IMPLEMENT_ASN1_TYPE_ex(ASN1_BOOLEAN, ASN1_BOOLEAN, ASN1_BOOLEAN_NONE)
