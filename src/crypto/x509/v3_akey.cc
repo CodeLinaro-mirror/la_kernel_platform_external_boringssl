@@ -23,6 +23,7 @@
 #include <openssl/obj.h>
 #include <openssl/x509.h>
 
+#include "ext_dat.h"
 #include "internal.h"
 
 

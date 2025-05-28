@@ -18,7 +18,7 @@
 #include <openssl/bio.h>
 #include <openssl/nid.h>
 
-#include "internal.h"
+#include "ext_dat.h"
 
 // OCSP extensions and a couple of CRL entry extensions
 
