@@ -14,6 +14,7 @@
 
 #include <openssl/ssl.h>
 
+#include <errno.h>
 #include <string.h>
 
 #include <openssl/asn1.h>
@@ -130,227 +131,322 @@ int SSL_add_file_cert_subjects_to_stack(STACK_OF(X509_NAME) *out,
 }
 
 int SSL_use_certificate_file(SSL *ssl, const char *file, int type) {
-  bssl::UniquePtr<BIO> in(BIO_new_file(file, "rb"));
-  if (in == nullptr) {
+  int reason_code;
+  BIO *in;
+  int ret = 0;
+  X509 *x = NULL;
+
+  in = BIO_new(BIO_s_file());
+  if (in == NULL) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_BUF_LIB);
-    return 0;
+    goto end;
   }
 
-  int reason_code;
-  bssl::UniquePtr<X509> x;
+  if (BIO_read_filename(in, file) <= 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_SYS_LIB);
+    goto end;
+  }
+
   if (type == SSL_FILETYPE_ASN1) {
     reason_code = ERR_R_ASN1_LIB;
-    x.reset(d2i_X509_bio(in.get(), nullptr));
+    x = d2i_X509_bio(in, NULL);
   } else if (type == SSL_FILETYPE_PEM) {
     reason_code = ERR_R_PEM_LIB;
-    x.reset(PEM_read_bio_X509(in.get(), nullptr,
-                              ssl->ctx->default_passwd_callback,
-                              ssl->ctx->default_passwd_callback_userdata));
+    x = PEM_read_bio_X509(in, NULL, ssl->ctx->default_passwd_callback,
+                          ssl->ctx->default_passwd_callback_userdata);
   } else {
     OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_SSL_FILETYPE);
-    return 0;
+    goto end;
   }
 
-  if (x == nullptr) {
+  if (x == NULL) {
     OPENSSL_PUT_ERROR(SSL, reason_code);
-    return 0;
+    goto end;
   }
 
-  return SSL_use_certificate(ssl, x.get());
+  ret = SSL_use_certificate(ssl, x);
+
+end:
+  X509_free(x);
+  BIO_free(in);
+
+  return ret;
 }
 
 int SSL_use_RSAPrivateKey_file(SSL *ssl, const char *file, int type) {
-  bssl::UniquePtr<BIO> in(BIO_new_file(file, "rb"));
-  if (in == nullptr) {
+  int reason_code, ret = 0;
+  BIO *in;
+  RSA *rsa = NULL;
+
+  in = BIO_new(BIO_s_file());
+  if (in == NULL) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_BUF_LIB);
-    return 0;
+    goto end;
   }
 
-  int reason_code;
-  bssl::UniquePtr<RSA> rsa;
+  if (BIO_read_filename(in, file) <= 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_SYS_LIB);
+    goto end;
+  }
+
   if (type == SSL_FILETYPE_ASN1) {
     reason_code = ERR_R_ASN1_LIB;
-    rsa.reset(d2i_RSAPrivateKey_bio(in.get(), nullptr));
+    rsa = d2i_RSAPrivateKey_bio(in, NULL);
   } else if (type == SSL_FILETYPE_PEM) {
     reason_code = ERR_R_PEM_LIB;
-    rsa.reset(PEM_read_bio_RSAPrivateKey(
-        in.get(), nullptr, ssl->ctx->default_passwd_callback,
-        ssl->ctx->default_passwd_callback_userdata));
+    rsa =
+        PEM_read_bio_RSAPrivateKey(in, NULL, ssl->ctx->default_passwd_callback,
+                                   ssl->ctx->default_passwd_callback_userdata);
   } else {
     OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_SSL_FILETYPE);
-    return 0;
+    goto end;
   }
 
-  if (rsa == nullptr) {
+  if (rsa == NULL) {
     OPENSSL_PUT_ERROR(SSL, reason_code);
-    return 0;
+    goto end;
   }
-  return SSL_use_RSAPrivateKey(ssl, rsa.get());
+  ret = SSL_use_RSAPrivateKey(ssl, rsa);
+  RSA_free(rsa);
+
+end:
+  BIO_free(in);
+  return ret;
 }
 
 int SSL_use_PrivateKey_file(SSL *ssl, const char *file, int type) {
-  bssl::UniquePtr<BIO> in(BIO_new_file(file, "rb"));
-  if (in == nullptr) {
+  int reason_code, ret = 0;
+  BIO *in;
+  EVP_PKEY *pkey = NULL;
+
+  in = BIO_new(BIO_s_file());
+  if (in == NULL) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_BUF_LIB);
-    return 0;
+    goto end;
   }
 
-  int reason_code;
-  bssl::UniquePtr<EVP_PKEY> pkey;
+  if (BIO_read_filename(in, file) <= 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_SYS_LIB);
+    goto end;
+  }
+
   if (type == SSL_FILETYPE_PEM) {
     reason_code = ERR_R_PEM_LIB;
-    pkey.reset(PEM_read_bio_PrivateKey(
-        in.get(), nullptr, ssl->ctx->default_passwd_callback,
-        ssl->ctx->default_passwd_callback_userdata));
+    pkey = PEM_read_bio_PrivateKey(in, NULL, ssl->ctx->default_passwd_callback,
+                                   ssl->ctx->default_passwd_callback_userdata);
   } else if (type == SSL_FILETYPE_ASN1) {
     reason_code = ERR_R_ASN1_LIB;
-    pkey.reset(d2i_PrivateKey_bio(in.get(), nullptr));
+    pkey = d2i_PrivateKey_bio(in, NULL);
   } else {
     OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_SSL_FILETYPE);
-    return 0;
+    goto end;
   }
 
-  if (pkey == nullptr) {
+  if (pkey == NULL) {
     OPENSSL_PUT_ERROR(SSL, reason_code);
-    return 0;
+    goto end;
   }
+  ret = SSL_use_PrivateKey(ssl, pkey);
+  EVP_PKEY_free(pkey);
 
-  return SSL_use_PrivateKey(ssl, pkey.get());
+end:
+  BIO_free(in);
+  return ret;
 }
 
 int SSL_CTX_use_certificate_file(SSL_CTX *ctx, const char *file, int type) {
-  bssl::UniquePtr<BIO> in(BIO_new_file(file, "rb"));
-  if (in == nullptr) {
+  int reason_code;
+  BIO *in;
+  int ret = 0;
+  X509 *x = NULL;
+
+  in = BIO_new(BIO_s_file());
+  if (in == NULL) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_BUF_LIB);
-    return 0;
+    goto end;
   }
 
-  int reason_code;
-  bssl::UniquePtr<X509> x;
+  if (BIO_read_filename(in, file) <= 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_SYS_LIB);
+    goto end;
+  }
+
   if (type == SSL_FILETYPE_ASN1) {
     reason_code = ERR_R_ASN1_LIB;
-    x.reset(d2i_X509_bio(in.get(), nullptr));
+    x = d2i_X509_bio(in, NULL);
   } else if (type == SSL_FILETYPE_PEM) {
     reason_code = ERR_R_PEM_LIB;
-    x.reset(PEM_read_bio_X509(in.get(), nullptr, ctx->default_passwd_callback,
-                              ctx->default_passwd_callback_userdata));
+    x = PEM_read_bio_X509(in, NULL, ctx->default_passwd_callback,
+                          ctx->default_passwd_callback_userdata);
   } else {
     OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_SSL_FILETYPE);
-    return 0;
+    goto end;
   }
 
-  if (x == nullptr) {
+  if (x == NULL) {
     OPENSSL_PUT_ERROR(SSL, reason_code);
-    return 0;
+    goto end;
   }
 
-  return SSL_CTX_use_certificate(ctx, x.get());
+  ret = SSL_CTX_use_certificate(ctx, x);
+
+end:
+  X509_free(x);
+  BIO_free(in);
+  return ret;
 }
 
 int SSL_CTX_use_RSAPrivateKey_file(SSL_CTX *ctx, const char *file, int type) {
-  bssl::UniquePtr<BIO> in(BIO_new_file(file, "rb"));
-  if (in == nullptr) {
+  int reason_code, ret = 0;
+  BIO *in;
+  RSA *rsa = NULL;
+
+  in = BIO_new(BIO_s_file());
+  if (in == NULL) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_BUF_LIB);
-    return 0;
+    goto end;
   }
 
-  int reason_code;
-  bssl::UniquePtr<RSA> rsa;
+  if (BIO_read_filename(in, file) <= 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_SYS_LIB);
+    goto end;
+  }
+
   if (type == SSL_FILETYPE_ASN1) {
     reason_code = ERR_R_ASN1_LIB;
-    rsa.reset(d2i_RSAPrivateKey_bio(in.get(), nullptr));
+    rsa = d2i_RSAPrivateKey_bio(in, NULL);
   } else if (type == SSL_FILETYPE_PEM) {
     reason_code = ERR_R_PEM_LIB;
-    rsa.reset(PEM_read_bio_RSAPrivateKey(
-        in.get(), nullptr, ctx->default_passwd_callback,
-        ctx->default_passwd_callback_userdata));
+    rsa = PEM_read_bio_RSAPrivateKey(in, NULL, ctx->default_passwd_callback,
+                                     ctx->default_passwd_callback_userdata);
   } else {
     OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_SSL_FILETYPE);
-    return 0;
+    goto end;
   }
 
-  if (rsa == nullptr) {
+  if (rsa == NULL) {
     OPENSSL_PUT_ERROR(SSL, reason_code);
-    return 0;
+    goto end;
   }
-  return SSL_CTX_use_RSAPrivateKey(ctx, rsa.get());
+  ret = SSL_CTX_use_RSAPrivateKey(ctx, rsa);
+  RSA_free(rsa);
+
+end:
+  BIO_free(in);
+  return ret;
 }
 
 int SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int type) {
-  bssl::UniquePtr<BIO> in(BIO_new_file(file, "rb"));
-  if (in == nullptr) {
+  int reason_code, ret = 0;
+  BIO *in;
+  EVP_PKEY *pkey = NULL;
+
+  in = BIO_new(BIO_s_file());
+  if (in == NULL) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_BUF_LIB);
-    return 0;
+    goto end;
   }
 
-  int reason_code;
-  bssl::UniquePtr<EVP_PKEY> pkey;
+  if (BIO_read_filename(in, file) <= 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_SYS_LIB);
+    goto end;
+  }
+
   if (type == SSL_FILETYPE_PEM) {
     reason_code = ERR_R_PEM_LIB;
-    pkey.reset(PEM_read_bio_PrivateKey(in.get(), nullptr,
-                                       ctx->default_passwd_callback,
-                                       ctx->default_passwd_callback_userdata));
+    pkey = PEM_read_bio_PrivateKey(in, NULL, ctx->default_passwd_callback,
+                                   ctx->default_passwd_callback_userdata);
   } else if (type == SSL_FILETYPE_ASN1) {
     reason_code = ERR_R_ASN1_LIB;
-    pkey.reset(d2i_PrivateKey_bio(in.get(), nullptr));
+    pkey = d2i_PrivateKey_bio(in, NULL);
   } else {
     OPENSSL_PUT_ERROR(SSL, SSL_R_BAD_SSL_FILETYPE);
-    return 0;
+    goto end;
   }
 
-  if (pkey == nullptr) {
+  if (pkey == NULL) {
     OPENSSL_PUT_ERROR(SSL, reason_code);
-    return 0;
+    goto end;
   }
+  ret = SSL_CTX_use_PrivateKey(ctx, pkey);
+  EVP_PKEY_free(pkey);
 
-  return SSL_CTX_use_PrivateKey(ctx, pkey.get());
+end:
+  BIO_free(in);
+  return ret;
 }
 
 // Read a file that contains our certificate in "PEM" format, possibly followed
 // by a sequence of CA certificates that should be sent to the peer in the
 // Certificate message.
 int SSL_CTX_use_certificate_chain_file(SSL_CTX *ctx, const char *file) {
-  bssl::UniquePtr<BIO> in(BIO_new_file(file, "rb"));
-  if (in == nullptr) {
+  BIO *in;
+  int ret = 0;
+  X509 *x = NULL;
+
+  ERR_clear_error();  // clear error stack for SSL_CTX_use_certificate()
+
+  in = BIO_new(BIO_s_file());
+  if (in == NULL) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_BUF_LIB);
-    return 0;
+    goto end;
   }
 
-  bssl::UniquePtr<X509> x(
-      PEM_read_bio_X509_AUX(in.get(), nullptr, ctx->default_passwd_callback,
-                            ctx->default_passwd_callback_userdata));
-  if (x == nullptr) {
+  if (BIO_read_filename(in, file) <= 0) {
+    OPENSSL_PUT_ERROR(SSL, ERR_R_SYS_LIB);
+    goto end;
+  }
+
+  x = PEM_read_bio_X509_AUX(in, NULL, ctx->default_passwd_callback,
+                            ctx->default_passwd_callback_userdata);
+  if (x == NULL) {
     OPENSSL_PUT_ERROR(SSL, ERR_R_PEM_LIB);
-    return 0;
+    goto end;
   }
 
-  if (!SSL_CTX_use_certificate(ctx, x.get())) {
-    return 0;
+  ret = SSL_CTX_use_certificate(ctx, x);
+
+  if (ERR_peek_error() != 0) {
+    ret = 0;  // Key/certificate mismatch doesn't imply ret==0 ...
   }
 
-  // If we could set up our certificate, now proceed to the CA certificates.
-  SSL_CTX_clear_chain_certs(ctx);
-  for (;;) {
-    bssl::UniquePtr<X509> ca(
-        PEM_read_bio_X509(in.get(), nullptr, ctx->default_passwd_callback,
-                          ctx->default_passwd_callback_userdata));
-    if (ca == nullptr) {
-      break;
+  if (ret) {
+    // If we could set up our certificate, now proceed to the CA
+    // certificates.
+    X509 *ca;
+    int r;
+    uint32_t err;
+
+    SSL_CTX_clear_chain_certs(ctx);
+
+    while ((ca = PEM_read_bio_X509(in, NULL, ctx->default_passwd_callback,
+                                   ctx->default_passwd_callback_userdata)) !=
+           NULL) {
+      r = SSL_CTX_add0_chain_cert(ctx, ca);
+      if (!r) {
+        X509_free(ca);
+        ret = 0;
+        goto end;
+      }
+      // Note that we must not free r if it was successfully added to the chain
+      // (while we must free the main certificate, since its reference count is
+      // increased by SSL_CTX_use_certificate).
     }
-    if (!SSL_CTX_add1_chain_cert(ctx, ca.get())) {
-      return 0;
+
+    // When the while loop ends, it's usually just EOF.
+    err = ERR_peek_last_error();
+    if (ERR_GET_LIB(err) == ERR_LIB_PEM &&
+        ERR_GET_REASON(err) == PEM_R_NO_START_LINE) {
+      ERR_clear_error();
+    } else {
+      ret = 0;  // some real error
     }
   }
 
-  // When the while loop ends, it's usually just EOF.
-  uint32_t err = ERR_peek_last_error();
-  if (ERR_GET_LIB(err) == ERR_LIB_PEM &&
-      ERR_GET_REASON(err) == PEM_R_NO_START_LINE) {
-    ERR_clear_error();
-    return 1;
-  }
-
-  return 0;  // Some real error.
+end:
+  X509_free(x);
+  BIO_free(in);
+  return ret;
 }
 
 void SSL_CTX_set_default_passwd_cb(SSL_CTX *ctx, pem_password_cb *cb) {

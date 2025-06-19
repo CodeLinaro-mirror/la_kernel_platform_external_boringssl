@@ -21,7 +21,6 @@
 
 #include <openssl/base64.h>
 #include <openssl/buf.h>
-#include <openssl/cipher.h>
 #include <openssl/des.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
