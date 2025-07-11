@@ -730,10 +730,10 @@ void scalar_encode_signed_13_12(uint8_t out[416], const scalar *s) {
     e |= g << 14;
     e |= h << 27;
     h >>= 5;
-    OPENSSL_memcpy(&out[13 * i], &a, sizeof(a));
-    OPENSSL_memcpy(&out[13 * i + 4], &c, sizeof(c));
-    OPENSSL_memcpy(&out[13 * i + 8], &e, sizeof(e));
-    OPENSSL_memcpy(&out[13 * i + 12], &h, 1);
+    CRYPTO_store_u32_le(&out[13 * i], a);
+    CRYPTO_store_u32_le(&out[13 * i + 4], c);
+    CRYPTO_store_u32_le(&out[13 * i + 8], e);
+    out[13 * i + 12] = static_cast<uint8_t>(h);
   }
 }
 
@@ -757,9 +757,9 @@ void scalar_encode_signed_20_19(uint8_t out[640], const scalar *s) {
     b |= c << 8;
     b |= d << 28;
     d >>= 4;
-    OPENSSL_memcpy(&out[10 * i], &a, sizeof(a));
-    OPENSSL_memcpy(&out[10 * i + 4], &b, sizeof(b));
-    OPENSSL_memcpy(&out[10 * i + 8], &d, 2);
+    CRYPTO_store_u32_le(&out[10 * i], a);
+    CRYPTO_store_u32_le(&out[10 * i + 4], b);
+    CRYPTO_store_u16_le(&out[10 * i + 8], static_cast<uint16_t>(d));
   }
 }
 
@@ -784,10 +784,9 @@ void scalar_encode_signed(uint8_t *out, const scalar *s, int bits,
 
 // FIPS 204, Algorithm 18 (`SimpleBitUnpack`). Specialized for bitlen(b) == 10.
 void scalar_decode_10(scalar *out, const uint8_t in[320]) {
-  uint32_t v;
   static_assert(kDegree % 4 == 0, "kDegree must be a multiple of 4");
   for (int i = 0; i < kDegree / 4; i++) {
-    OPENSSL_memcpy(&v, &in[5 * i], sizeof(v));
+    uint32_t v = CRYPTO_load_u32_le(&in[5 * i]);
     out->c[4 * i] = v & 0x3ff;
     out->c[4 * i + 1] = (v >> 10) & 0x3ff;
     out->c[4 * i + 2] = (v >> 20) & 0x3ff;
@@ -798,10 +797,9 @@ void scalar_decode_10(scalar *out, const uint8_t in[320]) {
 // FIPS 204, Algorithm 19 (`BitUnpack`). Specialized to bitlen(a+b) = 4 and b =
 // 4.
 int scalar_decode_signed_4_4(scalar *out, const uint8_t in[128]) {
-  uint32_t v;
   static_assert(kDegree % 8 == 0, "kDegree must be a multiple of 8");
   for (int i = 0; i < kDegree / 8; i++) {
-    OPENSSL_memcpy(&v, &in[4 * i], sizeof(v));
+    uint32_t v = CRYPTO_load_u32_le(&in[4 * i]);
     // None of the nibbles may be >= 9. So if the MSB of any nibble is set, none
     // of the other bits may be set. First, select all the MSBs.
     const uint32_t msbs = v & 0x88888888u;
@@ -865,14 +863,12 @@ void scalar_decode_signed_13_12(scalar *out, const uint8_t in[416]) {
   static const uint32_t k13Bits = (1u << 13) - 1;
   static const uint32_t k7Bits = (1u << 7) - 1;
 
-  uint32_t a, b, c;
-  uint8_t d;
   static_assert(kDegree % 8 == 0, "kDegree must be a multiple of 8");
   for (int i = 0; i < kDegree / 8; i++) {
-    OPENSSL_memcpy(&a, &in[13 * i], sizeof(a));
-    OPENSSL_memcpy(&b, &in[13 * i + 4], sizeof(b));
-    OPENSSL_memcpy(&c, &in[13 * i + 8], sizeof(c));
-    d = in[13 * i + 12];
+    uint32_t a = CRYPTO_load_u32_le(&in[13 * i]);
+    uint32_t b = CRYPTO_load_u32_le(&in[13 * i + 4]);
+    uint32_t c = CRYPTO_load_u32_le(&in[13 * i + 8]);
+    uint8_t d = in[13 * i + 12];
 
     // It's not possible for a 13-bit number to be out of range when the max is
     // 2^12.
@@ -893,13 +889,11 @@ void scalar_decode_signed_20_19(scalar *out, const uint8_t in[640]) {
   static const uint32_t kMax = 1u << 19;
   static const uint32_t k20Bits = (1u << 20) - 1;
 
-  uint32_t a, b;
-  uint16_t c;
   static_assert(kDegree % 4 == 0, "kDegree must be a multiple of 4");
   for (int i = 0; i < kDegree / 4; i++) {
-    OPENSSL_memcpy(&a, &in[10 * i], sizeof(a));
-    OPENSSL_memcpy(&b, &in[10 * i + 4], sizeof(b));
-    OPENSSL_memcpy(&c, &in[10 * i + 8], sizeof(c));
+    uint32_t a = CRYPTO_load_u32_le(&in[10 * i]);
+    uint32_t b = CRYPTO_load_u32_le(&in[10 * i + 4]);
+    uint16_t c = CRYPTO_load_u16_le(&in[10 * i + 8]);
 
     // It's not possible for a 20-bit number to be out of range when the max is
     // 2^19.
@@ -1512,26 +1506,15 @@ int mldsa_public_from_private(struct public_key<K> *pub,
   return 1;
 }
 
-// FIPS 204, Algorithm 7 (`ML-DSA.Sign_internal`). Returns 1 on success and 0
-// on failure.
+// FIPS 204, Algorithm 7 (`ML-DSA.Sign_internal`), using a pre-computed mu.
+// Returns 1 on success and 0 on failure.
 template <int K, int L>
-int mldsa_sign_internal_no_self_test(
+int mldsa_sign_mu(
     uint8_t out_encoded_signature[signature_bytes<K>()],
-    const struct private_key<K, L> *priv, const uint8_t *msg, size_t msg_len,
-    const uint8_t *context_prefix, size_t context_prefix_len,
-    const uint8_t *context, size_t context_len,
+    const struct private_key<K, L> *priv, const uint8_t mu[kMuBytes],
     const uint8_t randomizer[BCM_MLDSA_SIGNATURE_RANDOMIZER_BYTES]) {
-  uint8_t mu[kMuBytes];
-  struct BORINGSSL_keccak_st keccak_ctx;
-  BORINGSSL_keccak_init(&keccak_ctx, boringssl_shake256);
-  BORINGSSL_keccak_absorb(&keccak_ctx, priv->public_key_hash,
-                          sizeof(priv->public_key_hash));
-  BORINGSSL_keccak_absorb(&keccak_ctx, context_prefix, context_prefix_len);
-  BORINGSSL_keccak_absorb(&keccak_ctx, context, context_len);
-  BORINGSSL_keccak_absorb(&keccak_ctx, msg, msg_len);
-  BORINGSSL_keccak_squeeze(&keccak_ctx, mu, kMuBytes);
-
   uint8_t rho_prime[kRhoPrimeBytes];
+  struct BORINGSSL_keccak_st keccak_ctx;
   BORINGSSL_keccak_init(&keccak_ctx, boringssl_shake256);
   BORINGSSL_keccak_absorb(&keccak_ctx, priv->k, sizeof(priv->k));
   BORINGSSL_keccak_absorb(&keccak_ctx, randomizer,
@@ -1663,6 +1646,30 @@ int mldsa_sign_internal_no_self_test(
   }
 }
 
+// FIPS 204, Algorithm 7 (`ML-DSA.Sign_internal`). Returns 1 on success and 0
+// on failure.
+template <int K, int L>
+int mldsa_sign_internal_no_self_test(
+    uint8_t out_encoded_signature[signature_bytes<K>()],
+    const struct private_key<K, L> *priv, const uint8_t *msg, size_t msg_len,
+    const uint8_t *context_prefix, size_t context_prefix_len,
+    const uint8_t *context, size_t context_len,
+    const uint8_t randomizer[BCM_MLDSA_SIGNATURE_RANDOMIZER_BYTES]) {
+  uint8_t mu[kMuBytes];
+  struct BORINGSSL_keccak_st keccak_ctx;
+  BORINGSSL_keccak_init(&keccak_ctx, boringssl_shake256);
+  BORINGSSL_keccak_absorb(&keccak_ctx, priv->public_key_hash,
+                          sizeof(priv->public_key_hash));
+  BORINGSSL_keccak_absorb(&keccak_ctx, context_prefix, context_prefix_len);
+  BORINGSSL_keccak_absorb(&keccak_ctx, context, context_len);
+  BORINGSSL_keccak_absorb(&keccak_ctx, msg, msg_len);
+  BORINGSSL_keccak_squeeze(&keccak_ctx, mu, kMuBytes);
+
+  return mldsa_sign_mu(out_encoded_signature, priv, mu, randomizer);
+}
+
+// FIPS 204, Algorithm 7 (`ML-DSA.Sign_internal`). Returns 1 on success and 0
+// on failure.
 template <int K, int L>
 int mldsa_sign_internal(
     uint8_t out_encoded_signature[signature_bytes<K>()],
@@ -1674,6 +1681,35 @@ int mldsa_sign_internal(
   return mldsa_sign_internal_no_self_test(
       out_encoded_signature, priv, msg, msg_len, context_prefix,
       context_prefix_len, context, context_len, randomizer);
+}
+
+struct prehash_context {
+  struct BORINGSSL_keccak_st keccak_ctx;
+};
+
+template <int K>
+void mldsa_prehash_init(struct prehash_context *out_prehash_ctx,
+                        const struct public_key<K> *pub,
+                        const uint8_t *context_prefix,
+                        size_t context_prefix_len, const uint8_t *context,
+                        size_t context_len) {
+  BORINGSSL_keccak_init(&out_prehash_ctx->keccak_ctx, boringssl_shake256);
+  BORINGSSL_keccak_absorb(&out_prehash_ctx->keccak_ctx, pub->public_key_hash,
+                          sizeof(pub->public_key_hash));
+  BORINGSSL_keccak_absorb(&out_prehash_ctx->keccak_ctx, context_prefix,
+                          context_prefix_len);
+  BORINGSSL_keccak_absorb(&out_prehash_ctx->keccak_ctx, context, context_len);
+}
+
+void mldsa_prehash_update(struct prehash_context *inout_prehash_ctx,
+                          const uint8_t *msg, size_t msg_len) {
+  BORINGSSL_keccak_absorb(&inout_prehash_ctx->keccak_ctx, msg, msg_len);
+}
+
+void mldsa_prehash_finalize(uint8_t out_msg_rep[kMuBytes],
+                            struct prehash_context *inout_prehash_ctx) {
+  BORINGSSL_keccak_squeeze(&inout_prehash_ctx->keccak_ctx, out_msg_rep,
+                           kMuBytes);
 }
 
 // FIPS 204, Algorithm 8 (`ML-DSA.Verify_internal`).
@@ -1770,7 +1806,7 @@ struct private_key<6, 5> *private_key_from_external_65(
                 "MLDSA65 private key size incorrect");
   static_assert(alignof(struct BCM_mldsa65_private_key) ==
                     alignof(struct private_key<6, 5>),
-                "MLDSA65 private key align incorrect");
+                "MLDSA65 private key alignment incorrect");
   return (struct private_key<6, 5> *)external;
 }
 
@@ -1781,8 +1817,19 @@ struct public_key<6> *public_key_from_external_65(
       "MLDSA65 public key size incorrect");
   static_assert(
       alignof(struct BCM_mldsa65_public_key) == alignof(struct public_key<6>),
-      "MLDSA65 public key align incorrect");
+      "MLDSA65 public key alignment incorrect");
   return (struct public_key<6> *)external;
+}
+
+struct prehash_context *prehash_context_from_external_65(
+    struct BCM_mldsa65_prehash *external) {
+  static_assert(
+      sizeof(struct BCM_mldsa65_prehash) == sizeof(struct prehash_context),
+      "MLDSA pre-hash context size incorrect");
+  static_assert(
+      alignof(struct BCM_mldsa65_prehash) == alignof(struct prehash_context),
+      "MLDSA pre-hash context alignment incorrect");
+  return reinterpret_cast<prehash_context *>(external);
 }
 
 struct private_key<8, 7> *private_key_from_external_87(
@@ -1792,7 +1839,7 @@ struct private_key<8, 7> *private_key_from_external_87(
                 "MLDSA87 private key size incorrect");
   static_assert(alignof(struct BCM_mldsa87_private_key) ==
                     alignof(struct private_key<8, 7>),
-                "MLDSA87 private key align incorrect");
+                "MLDSA87 private key alignment incorrect");
   return (struct private_key<8, 7> *)external;
 }
 
@@ -1803,8 +1850,19 @@ struct public_key<8> *public_key_from_external_87(
       "MLDSA87 public key size incorrect");
   static_assert(
       alignof(struct BCM_mldsa87_public_key) == alignof(struct public_key<8>),
-      "MLDSA87 public key align incorrect");
+      "MLDSA87 public key alignment incorrect");
   return (struct public_key<8> *)external;
+}
+
+struct prehash_context *prehash_context_from_external_87(
+    struct BCM_mldsa87_prehash *external) {
+  static_assert(
+      sizeof(struct BCM_mldsa87_prehash) == sizeof(struct prehash_context),
+      "MLDSA pre-hash context size incorrect");
+  static_assert(
+      alignof(struct BCM_mldsa87_prehash) == alignof(struct prehash_context),
+      "MLDSA pre-hash context alignment incorrect");
+  return reinterpret_cast<prehash_context *>(external);
 }
 
 namespace fips {
@@ -2105,6 +2163,48 @@ bcm_status BCM_mldsa65_sign(
       sizeof(context_prefix), context, context_len, randomizer);
 }
 
+// ML-DSA pre-hashed API: initializing a pre-hashing context.
+void BCM_mldsa65_prehash_init(struct BCM_mldsa65_prehash *out_prehash_ctx,
+                              const struct BCM_mldsa65_public_key *public_key,
+                              const uint8_t *context, size_t context_len) {
+  BSSL_CHECK(context_len <= 255);
+
+  const uint8_t context_prefix[2] = {0, static_cast<uint8_t>(context_len)};
+  mldsa_prehash_init(mldsa::prehash_context_from_external_65(out_prehash_ctx),
+                     mldsa::public_key_from_external_65(public_key),
+                     context_prefix, sizeof(context_prefix), context,
+                     context_len);
+}
+
+// ML-DSA pre-hashed API: updating a pre-hashing context with a message chunk.
+void BCM_mldsa65_prehash_update(struct BCM_mldsa65_prehash *inout_prehash_ctx,
+                                const uint8_t *msg, size_t msg_len) {
+  mldsa_prehash_update(
+      mldsa::prehash_context_from_external_65(inout_prehash_ctx), msg, msg_len);
+}
+
+// ML-DSA pre-hashed API: obtaining a message representative to sign.
+void BCM_mldsa65_prehash_finalize(
+    uint8_t out_msg_rep[BCM_MLDSA_MU_BYTES],
+    struct BCM_mldsa65_prehash *inout_prehash_ctx) {
+  mldsa_prehash_finalize(
+      out_msg_rep, mldsa::prehash_context_from_external_65(inout_prehash_ctx));
+}
+
+// ML-DSA pre-hashed API: signing a message representative.
+bcm_status BCM_mldsa65_sign_message_representative(
+    uint8_t out_encoded_signature[BCM_MLDSA65_SIGNATURE_BYTES],
+    const struct BCM_mldsa65_private_key *private_key,
+    const uint8_t msg_rep[BCM_MLDSA_MU_BYTES]) {
+  uint8_t randomizer[BCM_MLDSA_SIGNATURE_RANDOMIZER_BYTES];
+  BCM_rand_bytes(randomizer, sizeof(randomizer));
+  CONSTTIME_SECRET(randomizer, sizeof(randomizer));
+
+  return bcm_as_approved_status(mldsa_sign_mu(
+      out_encoded_signature, mldsa::private_key_from_external_65(private_key),
+      msg_rep, randomizer));
+}
+
 // FIPS 204, Algorithm 3 (`ML-DSA.Verify`).
 bcm_status BCM_mldsa65_verify(
     const struct BCM_mldsa65_public_key *public_key,
@@ -2264,6 +2364,48 @@ bcm_status BCM_mldsa87_sign(
   return BCM_mldsa87_sign_internal(
       out_encoded_signature, private_key, msg, msg_len, context_prefix,
       sizeof(context_prefix), context, context_len, randomizer);
+}
+
+// ML-DSA pre-hashed API: initializing a pre-hashing context.
+void BCM_mldsa87_prehash_init(struct BCM_mldsa87_prehash *out_prehash_ctx,
+                              const struct BCM_mldsa87_public_key *public_key,
+                              const uint8_t *context, size_t context_len) {
+  BSSL_CHECK(context_len <= 255);
+
+  const uint8_t context_prefix[2] = {0, static_cast<uint8_t>(context_len)};
+  mldsa_prehash_init(mldsa::prehash_context_from_external_87(out_prehash_ctx),
+                     mldsa::public_key_from_external_87(public_key),
+                     context_prefix, sizeof(context_prefix), context,
+                     context_len);
+}
+
+// ML-DSA pre-hashed API: updating a pre-hashing context with a message chunk.
+void BCM_mldsa87_prehash_update(struct BCM_mldsa87_prehash *inout_prehash_ctx,
+                                const uint8_t *msg, size_t msg_len) {
+  mldsa_prehash_update(
+      mldsa::prehash_context_from_external_87(inout_prehash_ctx), msg, msg_len);
+}
+
+// ML-DSA pre-hashed API: obtaining a message representative to sign.
+void BCM_mldsa87_prehash_finalize(
+    uint8_t out_msg_rep[BCM_MLDSA_MU_BYTES],
+    struct BCM_mldsa87_prehash *inout_prehash_ctx) {
+  mldsa_prehash_finalize(
+      out_msg_rep, mldsa::prehash_context_from_external_87(inout_prehash_ctx));
+}
+
+// ML-DSA pre-hashed API: signing a message representative.
+bcm_status BCM_mldsa87_sign_message_representative(
+    uint8_t out_encoded_signature[BCM_MLDSA87_SIGNATURE_BYTES],
+    const struct BCM_mldsa87_private_key *private_key,
+    const uint8_t msg_rep[BCM_MLDSA_MU_BYTES]) {
+  uint8_t randomizer[BCM_MLDSA_SIGNATURE_RANDOMIZER_BYTES];
+  BCM_rand_bytes(randomizer, sizeof(randomizer));
+  CONSTTIME_SECRET(randomizer, sizeof(randomizer));
+
+  return bcm_as_approved_status(mldsa_sign_mu(
+      out_encoded_signature, mldsa::private_key_from_external_87(private_key),
+      msg_rep, randomizer));
 }
 
 // FIPS 204, Algorithm 3 (`ML-DSA.Verify`).
