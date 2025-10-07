@@ -123,6 +123,8 @@ test_support_sources = [
     "src/ssl/test/settings_writer.h",
     "src/ssl/test/test_config.h",
     "src/ssl/test/test_state.h",
+    "src/third_party/fiat/bedrock_unverified_bareminimum.c.inc",
+    "src/third_party/fiat/bedrock_unverified_platform.c.inc",
     "src/third_party/fiat/curve25519_32.h",
     "src/third_party/fiat/curve25519_64.h",
     "src/third_party/fiat/curve25519_64_adx.h",
@@ -130,6 +132,10 @@ test_support_sources = [
     "src/third_party/fiat/p256_32.h",
     "src/third_party/fiat/p256_64.h",
     "src/third_party/fiat/p256_64_msvc.h",
+    "src/third_party/fiat/p256_field.c.inc",
+    "src/third_party/fiat/p256_field_32.br.c.inc",
+    "src/third_party/fiat/p256_field_64.br.c.inc",
+    "src/third_party/fiat/p256_point.br.c.inc",
 ]
 
 crypto_test_sources = [
@@ -208,6 +214,8 @@ crypto_test_sources = [
     "src/crypto/x509/x509_test.cc",
     "src/crypto/x509/x509_time_test.cc",
     "src/crypto/xwing/xwing_test.cc",
+    "src/third_party/fiat/bedrock_platform_test.cc",
+    "src/third_party/fiat/bedrock_polyfill_platform.c.inc",
 ]
 
 ssl_test_sources = [
@@ -319,8 +327,10 @@ crypto_test_data = [
     "src/crypto/hmac/hmac_tests.txt",
     "src/crypto/hpke/hpke_test_vectors.txt",
     "src/crypto/kyber/kyber_tests.txt",
+    "src/crypto/mldsa/mldsa_nist_keygen_44_tests.txt",
     "src/crypto/mldsa/mldsa_nist_keygen_65_tests.txt",
     "src/crypto/mldsa/mldsa_nist_keygen_87_tests.txt",
+    "src/crypto/mldsa/mldsa_nist_siggen_44_tests.txt",
     "src/crypto/mldsa/mldsa_nist_siggen_65_tests.txt",
     "src/crypto/mldsa/mldsa_nist_siggen_87_tests.txt",
     "src/crypto/mlkem/mlkem1024_decap_tests.txt",
@@ -357,6 +367,14 @@ crypto_test_data = [
     "src/crypto/pkcs8/test/unicode_password.p12",
     "src/crypto/pkcs8/test/windows.p12",
     "src/crypto/poly1305/poly1305_tests.txt",
+    "src/crypto/rsa/test/rsa511.pem",
+    "src/crypto/rsa/test/rsa511pub.pem",
+    "src/crypto/rsa/test/rsa512.pem",
+    "src/crypto/rsa/test/rsa512pub.pem",
+    "src/crypto/rsa/test/rsa8192.pem",
+    "src/crypto/rsa/test/rsa8192pub.pem",
+    "src/crypto/rsa/test/rsa8193.pem",
+    "src/crypto/rsa/test/rsa8193pub.pem",
     "src/crypto/siphash/siphash_tests.txt",
     "src/crypto/slhdsa/slhdsa_keygen.txt",
     "src/crypto/slhdsa/slhdsa_prehash.txt",
@@ -487,6 +505,8 @@ crypto_test_data = [
     "src/third_party/wycheproof_testvectors/hmac_sha512_test.txt",
     "src/third_party/wycheproof_testvectors/kw_test.txt",
     "src/third_party/wycheproof_testvectors/kwp_test.txt",
+    "src/third_party/wycheproof_testvectors/mldsa_44_standard_sign_test.txt",
+    "src/third_party/wycheproof_testvectors/mldsa_44_standard_verify_test.txt",
     "src/third_party/wycheproof_testvectors/mldsa_65_standard_sign_test.txt",
     "src/third_party/wycheproof_testvectors/mldsa_65_standard_verify_test.txt",
     "src/third_party/wycheproof_testvectors/mldsa_87_standard_sign_test.txt",
