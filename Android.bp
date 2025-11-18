@@ -1,6 +1,11 @@
 // Note that some host libraries have the same module name as the target
 // libraries. This is currently needed to build, for example, adb. But it's
 // probably something that should be changed.
+//
+// Changes from Qualcomm Technologies, Inc. are provided under the following license:
+// Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+// SPDX-License-Identifier: BSD-3-Clause-Clear
+//
 
 package {
     default_visibility: ["//visibility:private"],
@@ -350,6 +355,7 @@ cc_library {
 // somewhere that needs the FIPS version.
 cc_library_static {
     name: "libcrypto_static",
+    recovery_available: true,
     visibility: [
         "//art/dex2oat",
         "//art/tools/hiddenapi",
