@@ -32,9 +32,11 @@
 #include "internal.h"
 
 
+using namespace bssl;
+
 DEFINE_STATIC_EX_DATA_CLASS(g_ec_ex_data_class)
 
-static EC_WRAPPED_SCALAR *ec_wrapped_scalar_new(const EC_GROUP *group) {
+static bssl::EC_WRAPPED_SCALAR *ec_wrapped_scalar_new(const EC_GROUP *group) {
   EC_WRAPPED_SCALAR *wrapped = reinterpret_cast<EC_WRAPPED_SCALAR *>(
       OPENSSL_zalloc(sizeof(EC_WRAPPED_SCALAR)));
   if (wrapped == nullptr) {
@@ -52,7 +54,7 @@ static void ec_wrapped_scalar_free(EC_WRAPPED_SCALAR *scalar) {
   OPENSSL_free(scalar);
 }
 
-EC_KEY *EC_KEY_new(void) { return EC_KEY_new_method(nullptr); }
+EC_KEY *EC_KEY_new() { return EC_KEY_new_method(nullptr); }
 
 EC_KEY *EC_KEY_new_method(const ENGINE *engine) {
   EC_KEY *ret = reinterpret_cast<EC_KEY *>(OPENSSL_zalloc(sizeof(EC_KEY)));
@@ -326,7 +328,7 @@ int EC_KEY_set_public_key_affine_coordinates(EC_KEY *key, const BIGNUM *x,
     return 0;
   }
 
-  bssl::UniquePtr<EC_POINT> point(EC_POINT_new(key->group));
+  UniquePtr<EC_POINT> point(EC_POINT_new(key->group));
   if (point == nullptr ||
       !EC_POINT_set_affine_coordinates_GFp(key->group, point.get(), x, y,
                                            nullptr) ||
@@ -344,7 +346,7 @@ int EC_KEY_oct2key(EC_KEY *key, const uint8_t *in, size_t len, BN_CTX *ctx) {
     return 0;
   }
 
-  bssl::UniquePtr<EC_POINT> point(EC_POINT_new(key->group));
+  UniquePtr<EC_POINT> point(EC_POINT_new(key->group));
   return point != nullptr &&
          EC_POINT_oct2point(key->group, point.get(), in, len, ctx) &&
          EC_KEY_set_public_key(key, point.get());
@@ -428,8 +430,11 @@ int EC_KEY_generate_key(EC_KEY *key) {
     return 0;
   }
 
-  // Check that the group order is FIPS compliant (FIPS 186-4 B.4.2).
-  if (EC_GROUP_order_bits(key->group) < 160) {
+  // Generate an ECDSA key pair via rejection sampling. This function implements
+  // FIPS 186-5, A.2.2, repeating the process on failure.
+
+  // Check the group order is large enough. See step 1 of FIPS 186-5, A.2.2.
+  if (EC_GROUP_order_bits(key->group) < 224) {
     OPENSSL_PUT_ERROR(EC, EC_R_INVALID_GROUP_ORDER);
     return 0;
   }
@@ -438,7 +443,6 @@ int EC_KEY_generate_key(EC_KEY *key) {
   EC_WRAPPED_SCALAR *priv_key = ec_wrapped_scalar_new(key->group);
   EC_POINT *pub_key = EC_POINT_new(key->group);
   if (priv_key == nullptr || pub_key == nullptr ||
-      // Generate the private key by testing candidates (FIPS 186-4 B.4.2).
       !ec_random_nonzero_scalar(key->group, &priv_key->scalar,
                                 kDefaultAdditionalData) ||
       !ec_point_mul_scalar_base(key->group, &pub_key->raw, &priv_key->scalar)) {
