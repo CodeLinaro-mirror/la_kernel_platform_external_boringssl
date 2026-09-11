@@ -279,8 +279,8 @@ cc_library {
             ],
             sanitize: {
                 // Disable address sanitizing otherwise libcrypto will not report
-                // itself as being in FIPS mode, which causes boringssl_self_test
-                // to fail.
+                // itself as being in FIPS mode, which causes selftests to fail
+                // per process.
                 address: false,
             },
             inject_bssl_hash: true,
@@ -345,8 +345,8 @@ cc_library {
             ],
             sanitize: {
                 // Disable address sanitizing otherwise libcrypto will not report
-                // itself as being in FIPS mode, which causes boringssl_self_test
-                // to fail.
+                // itself as being in FIPS mode, which causes selftests to fail
+                // per process.
                 address: false,
             },
             inject_bssl_hash: true,
