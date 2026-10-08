@@ -76,11 +76,7 @@ cc_defaults {
 
 cc_defaults {
     name: "boringssl_flags_baremetal",
-    cflags: [
-        "-DANDROID_BAREMETAL",
-        // TODO(b/486922845): Remove this.
-        "-DBORINGSSL_TEMPORARY_NO_CXX_RUNTIME",
-    ],
+    cflags: ["-DANDROID_BAREMETAL"],
     defaults: [
         "boringssl_flags_common",
         "cc_baremetal_defaults",
