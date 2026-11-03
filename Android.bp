@@ -808,7 +808,7 @@ rust_bindgen {
 
 cc_library_static {
     name: "libbssl_sys_raw_staticfns",
-    srcs: [":libbssl_sys_raw"],
+    srcs: [":libbssl_sys_raw{.c}"],
     local_include_dirs: [
         "src/include",
         "src/rust/bssl-sys",
@@ -855,7 +855,7 @@ rust_bindgen {
 
 cc_library_static {
     name: "libbssl_sys_raw_nostd_staticfns",
-    srcs: [":libbssl_sys_raw_nostd"],
+    srcs: [":libbssl_sys_raw_nostd{.c}"],
     local_include_dirs: [
         "src/include",
         "src/rust/bssl-sys",
