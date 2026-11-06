@@ -1,0 +1,57 @@
+// Drift check for sources.bp.
+//
+// boringssl_sources_manifest records which files each filegroup in
+// sources.bp actually matched, as JSON Lines: one [filegroup, path] per
+// line. boringssl_sources_test compares that with upstream's
+// src/gen/sources.json and names any files that differ. If a filegroup ever
+// matches nothing, Soong rejects the genrule ("label ... has no files"); delete
+// or fix that filegroup.
+
+genrule {
+    name: "boringssl_sources_manifest",
+    srcs: [
+        "src/gen/sources.json",
+        ":boringssl_bcm_srcs",
+        ":boringssl_bcm_asm",
+        ":boringssl_crypto_srcs",
+        ":boringssl_crypto_asm",
+        ":boringssl_test_support_srcs",
+        ":boringssl_test_support_asm",
+        ":boringssl_ssl_srcs",
+        ":boringssl_bssl_srcs",
+        ":boringssl_pki_srcs",
+        ":boringssl_crypto_test_srcs",
+        ":boringssl_crypto_test_data",
+        ":boringssl_ssl_test_srcs",
+    ],
+    out: ["boringssl_sources_manifest.jsonl"],
+    cmd: "(" +
+        "printf '[\"sources_json\", \"%s\"]\\n' $(location src/gen/sources.json); " +
+        "printf '[\"boringssl_bcm_srcs\", \"%s\"]\\n' $(locations :boringssl_bcm_srcs); " +
+        "printf '[\"boringssl_bcm_asm\", \"%s\"]\\n' $(locations :boringssl_bcm_asm); " +
+        "printf '[\"boringssl_crypto_srcs\", \"%s\"]\\n' $(locations :boringssl_crypto_srcs); " +
+        "printf '[\"boringssl_crypto_asm\", \"%s\"]\\n' $(locations :boringssl_crypto_asm); " +
+        "printf '[\"boringssl_test_support_srcs\", \"%s\"]\\n' $(locations :boringssl_test_support_srcs); " +
+        "printf '[\"boringssl_test_support_asm\", \"%s\"]\\n' $(locations :boringssl_test_support_asm); " +
+        "printf '[\"boringssl_ssl_srcs\", \"%s\"]\\n' $(locations :boringssl_ssl_srcs); " +
+        "printf '[\"boringssl_bssl_srcs\", \"%s\"]\\n' $(locations :boringssl_bssl_srcs); " +
+        "printf '[\"boringssl_pki_srcs\", \"%s\"]\\n' $(locations :boringssl_pki_srcs); " +
+        "printf '[\"boringssl_crypto_test_srcs\", \"%s\"]\\n' $(locations :boringssl_crypto_test_srcs); " +
+        "printf '[\"boringssl_crypto_test_data\", \"%s\"]\\n' $(locations :boringssl_crypto_test_data); " +
+        "printf '[\"boringssl_ssl_test_srcs\", \"%s\"]\\n' $(locations :boringssl_ssl_test_srcs)" +
+        ") > $(out)",
+}
+
+python_test_host {
+    name: "boringssl_sources_test",
+    main: "sources_test.py",
+    srcs: ["sources_test.py"],
+    data: [
+        ":boringssl_sources_manifest",
+        "src/gen/sources.json",
+    ],
+    test_options: {
+        unit_test: true,
+    },
+    test_suites: ["general-tests"],
+}

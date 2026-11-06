@@ -49,6 +49,10 @@
     },
     {
       "name": "libkmr_crypto_boring_test"
+    },
+    {
+      "name": "boringssl_sources_test",
+      "host": true
     }
   ],
   "postsubmit": [
