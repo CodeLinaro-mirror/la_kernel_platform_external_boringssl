@@ -45,7 +45,7 @@ rm -Rf src/.git
 rm -Rf src/fuzz
 rm -Rf src/third_party/googletest
 
-python3 src/util/generate_build_files.py android cmake
+python3 src/util/generate_build_files.py android
 cp src/LICENSE NOTICE
 
 # TODO(b/503870633): Remove this line after BoringSSL is updated to no longer
