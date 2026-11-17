@@ -804,6 +804,8 @@ rust_bindgen {
         "com.android.bettertogether", // Bug component ID: 1916535, PoC: kaishi
         "com.android.compos",
         "com.android.configinfrastructure",
+        "com.android.resolv",
+        "com.android.tethering",
         "com.android.virt",
     ],
     handle_static_inline: true,
@@ -827,6 +829,8 @@ cc_library_static {
         "com.android.bettertogether", // Bug component ID: 1916535, PoC: kaishi
         "com.android.compos",
         "com.android.configinfrastructure",
+        "com.android.resolv",
+        "com.android.tethering",
         "com.android.virt",
     ],
     // b/336916369: This library gets linked into a rust rlib.  Disable LTO
@@ -897,6 +901,7 @@ rust_defaults {
         "//external/rust/crates/openssl",
         "//external/rust/android-crates-io/crates/tokio-openssl",
         "//external/rust/android-crates-io/crates/aws-lc-rs",
+        "//external/rust/android-crates-io/crates/quiche",
         "//system/gatekeeper/rust/boringssl",
         "//system/keymint/boringssl",
         "//system/security/prng_seeder",
@@ -939,7 +944,12 @@ rust_library_rlib {
         "com.android.bettertogether", // Bug component ID: 1916535, PoC: kaishi
         "com.android.compos",
         "com.android.configinfrastructure",
+        "com.android.resolv",
+        "com.android.tethering",
         "com.android.virt",
+    ],
+    visibility: [
+        "//external/rust/android-crates-io/crates/quiche",
     ],
 }
 
@@ -1069,6 +1079,8 @@ rust_library_rlib {
         "com.android.bettertogether", // Bug component ID: 1916535, PoC: kaishi
         "com.android.compos",
         "com.android.configinfrastructure",
+        "com.android.resolv",
+        "com.android.tethering",
         "com.android.virt",
     ],
 }
