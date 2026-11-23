@@ -1,6 +1,18 @@
 # Updating BoringSSL from upstream
 
-## Normal rollup to upstream HEAD
+## Automated updates
+
+Routine updates from upstream `main` are imported into `src/` via Copybara,
+which updates `NOTICE`, `BORINGSSL_REVISION`, and `METADATA` and uploads a
+Gerrit change for review.
+
+Soong source lists in `sources.bp` use filegroup globs validated against
+`src/gen/sources.json` by `boringssl_sources_test` in presubmit, and
+`CMakeLists.txt` includes `src/gen/sources.cmake` directly. If an upstream
+roll fails `boringssl_sources_test`, update the corresponding filegroup in
+`sources.bp` on the roll change.
+
+## Manual rollup to upstream HEAD
 
 * Start a new feature branch, _e.g._ `repo start upstream-update .`
 * Run `./update-upstream.sh`.  This will update all of `src/` from upstream HEAD
@@ -18,4 +30,3 @@ order to add a `Change-Id` tag for Gerrit.  TODO(prb) automate this.
 
 As per the previous section but add the branch name to the update command line,
 _e.g._ `./update-upstream.sh fips-20250305`
-
